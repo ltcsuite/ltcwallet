@@ -18,7 +18,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/rpc/legacyrpc"
 	"github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/lightninglabs/neutrino"
+	"github.com/ltcsuite/neutrino"
 )
 
 var (

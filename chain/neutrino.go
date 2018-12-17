@@ -16,7 +16,7 @@ import (
 	"github.com/ltcsuite/ltcutil/gcs/builder"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
-	"github.com/lightninglabs/neutrino"
+	"github.com/ltcsuite/neutrino"
 )
 
 // NeutrinoClient is an implementation of the btcwalet chain.Interface interface.

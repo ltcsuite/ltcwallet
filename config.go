@@ -21,7 +21,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/netparams"
 	"github.com/ltcsuite/ltcwallet/wallet"
 	flags "github.com/jessevdk/go-flags"
-	"github.com/lightninglabs/neutrino"
+	"github.com/ltcsuite/neutrino"
 )
 
 const (
