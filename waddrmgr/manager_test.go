@@ -14,11 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/snacl"
-	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/snacl"
+	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/davecgh/go-spew/spew"
 )
 
@@ -409,7 +409,7 @@ func testExternalAddresses(tc *testContext) bool {
 		chainParams := tc.manager.ChainParams()
 		for i := 0; i < len(expectedExternalAddrs); i++ {
 			pkHash := expectedExternalAddrs[i].addressHash
-			utilAddr, err := btcutil.NewAddressPubKeyHash(
+			utilAddr, err := ltcutil.NewAddressPubKeyHash(
 				pkHash, chainParams,
 			)
 			if err != nil {
@@ -561,7 +561,7 @@ func testInternalAddresses(tc *testContext) bool {
 		chainParams := tc.manager.ChainParams()
 		for i := 0; i < len(expectedInternalAddrs); i++ {
 			pkHash := expectedInternalAddrs[i].addressHash
-			utilAddr, err := btcutil.NewAddressPubKeyHash(
+			utilAddr, err := ltcutil.NewAddressPubKeyHash(
 				pkHash, chainParams,
 			)
 			if err != nil {
@@ -729,31 +729,29 @@ func testImportPrivateKey(tc *testContext) bool {
 	}{
 		{
 			name: "wif for uncompressed pubkey address",
-			in:   "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ",
+			in:   "T9zRPCoi4n8vnMwHpZ3H7o9FnMy5MbCaBpnjfz8NSrrP7tsa7iag",
 			expected: expectedAddr{
-				address:     "1GAehh7TsJAHuUAeKZcXf5CnwuGuGgyX2S",
-				addressHash: hexToBytes("a65d1a239d4ec666643d350c7bb8fc44d2881128"),
+				address:     "LNYA9bdcPcnGomdDPg4CGtyHos4Fk2UmM2",
+				addressHash: hexToBytes("2459c95b782b527598bc8a33b8a4cf75aa513333"),
 				internal:    false,
 				imported:    true,
-				compressed:  false,
-				pubKey: hexToBytes("04d0de0aaeaefad02b8bdc8a01a1b8b11c696bd3" +
-					"d66a2c5f10780d95b7df42645cd85228a6fb29940e858e7e558" +
-					"42ae2bd115d1ed7cc0e82d934e929c97648cb0a"),
-				privKey: hexToBytes("0c28fca386c7a227600b2fe50b7cae11ec86d3bf1fbe471be89827e19d72aa1d"),
+				compressed:  true,
+				pubKey: hexToBytes("031ab0b43001d43f0850879cc06687fcfd07710bc9a734dfeec6a35fca082cbdcd"),
+				privKey: hexToBytes("cf084f81feba776c499d4bae7bfcadac8b7990e29f60eab79aaa8d66be927e35"),
 				// privKeyWIF is set to the in field during tests
 			},
 		},
 		{
 			name: "wif for compressed pubkey address",
-			in:   "KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617",
+			in:   "T9VqdWN7z6Kiq6KzdbuAyKLZTqbTvTzfh8YkGNsJ2jZXHZuf4t6K",
 			expected: expectedAddr{
-				address:     "1LoVGDgRs9hTfTNJNuXKSpywcbdvwRXpmK",
-				addressHash: hexToBytes("d9351dcbad5b8f3b8bfa2f2cdc85c28118ca9326"),
+				address:     "LSSptRR8yb3exDei6kmqrJZ85iYSXhJQu6",
+				addressHash: hexToBytes("4f38218ce8ed17990b5da8681c07d49a1aaa6beb"),
 				internal:    false,
 				imported:    true,
 				compressed:  true,
-				pubKey:      hexToBytes("02d0de0aaeaefad02b8bdc8a01a1b8b11c696bd3d66a2c5f10780d95b7df42645c"),
-				privKey:     hexToBytes("0c28fca386c7a227600b2fe50b7cae11ec86d3bf1fbe471be89827e19d72aa1d"),
+				pubKey:      hexToBytes("03b078788db93d288e832314def5b578573a8789dc0b527107be57912e2cec7ac5"),
+				privKey:     hexToBytes("c0542dbe1dd6a328db75e9caf674dbea8ce9823d180e2e509915bddbc9a75664"),
 				// privKeyWIF is set to the in field during tests
 			},
 		},
@@ -779,7 +777,7 @@ func testImportPrivateKey(tc *testContext) bool {
 	if tc.create {
 		for i, test := range tests {
 			test.expected.privKeyWIF = test.in
-			wif, err := btcutil.DecodeWIF(test.in)
+			wif, err := ltcutil.DecodeWIF(test.in)
 			if err != nil {
 				tc.t.Errorf("%s DecodeWIF #%d (%s): unexpected "+
 					"error: %v", prefix, i, test.name, err)
@@ -815,7 +813,7 @@ func testImportPrivateKey(tc *testContext) bool {
 
 			// Use the Address API to retrieve each of the expected
 			// new addresses and ensure they're accurate.
-			utilAddr, err := btcutil.NewAddressPubKeyHash(
+			utilAddr, err := ltcutil.NewAddressPubKeyHash(
 				test.expected.addressHash, chainParams)
 			if err != nil {
 				tc.t.Errorf("%s NewAddressPubKeyHash #%d (%s): "+
@@ -900,7 +898,7 @@ func testImportScript(tc *testContext) bool {
 				"ed9493a9fc20fdb4a714808f0b680f1f1d935277" +
 				"48b5e3f629ffac"),
 			expected: expectedAddr{
-				address:     "3MbyWAu9UaoBewR3cArF1nwf4aQgVwzrA5",
+				address:     "MTp7p4K7RhecTSgwi3qaqSC4PH18XXP73g",
 				addressHash: hexToBytes("da6e6a632d96dc5530d7b3c9f3017725d023093e"),
 				internal:    false,
 				imported:    true,
@@ -921,7 +919,7 @@ func testImportScript(tc *testContext) bool {
 				"6ffefb2238af8627363bdf2ed97c1f89784a1aec" +
 				"db43384f11d2acc64443c7fc299cef0400421a53ae"),
 			expected: expectedAddr{
-				address:     "34CRZpt8j81rgh9QhzuBepqPi4cBQSjhjr",
+				address:     "MAQZsiJ6gEsHVCRJostXUU5o2mCdQWSZBy",
 				addressHash: hexToBytes("1b800cec1fe92222f36a502c139bed47c5959715"),
 				internal:    false,
 				imported:    true,
@@ -983,7 +981,7 @@ func testImportScript(tc *testContext) bool {
 
 			// Use the Address API to retrieve each of the expected
 			// new addresses and ensure they're accurate.
-			utilAddr, err := btcutil.NewAddressScriptHash(test.in,
+			utilAddr, err := ltcutil.NewAddressScriptHash(test.in,
 				chainParams)
 			if err != nil {
 				tc.t.Errorf("%s NewAddressScriptHash #%d (%s): "+
@@ -1072,13 +1070,13 @@ func testMarkUsed(tc *testContext) bool {
 	for i, test := range tests {
 		addrHash := test.in
 
-		var addr btcutil.Address
+		var addr ltcutil.Address
 		var err error
 		switch test.typ {
 		case addrPubKeyHash:
-			addr, err = btcutil.NewAddressPubKeyHash(addrHash, chainParams)
+			addr, err = ltcutil.NewAddressPubKeyHash(addrHash, chainParams)
 		case addrScriptHash:
-			addr, err = btcutil.NewAddressScriptHashFromHash(addrHash, chainParams)
+			addr, err = ltcutil.NewAddressScriptHashFromHash(addrHash, chainParams)
 		default:
 			panic("unreachable")
 		}
@@ -1434,7 +1432,7 @@ func testLookupAccount(tc *testContext) bool {
 	// Test account lookup for default account adddress
 	var expectedAccount uint32
 	for i, addr := range expectedAddrs {
-		addr, err := btcutil.NewAddressPubKeyHash(addr.addressHash,
+		addr, err := ltcutil.NewAddressPubKeyHash(addr.addressHash,
 			tc.manager.ChainParams())
 		if err != nil {
 			tc.t.Errorf("AddrAccount #%d: unexpected error: %v", i, err)
@@ -2213,7 +2211,7 @@ func TestScopedKeyManagerManagement(t *testing.T) {
 		t.Fatalf("addr type mismatch: expected %v, got %v",
 			NestedWitnessPubKey, externalAddr[0].AddrType())
 	}
-	_, ok := externalAddr[0].Address().(*btcutil.AddressScriptHash)
+	_, ok := externalAddr[0].Address().(*ltcutil.AddressScriptHash)
 	if !ok {
 		t.Fatalf("wrong type: %T", externalAddr[0].Address())
 	}
@@ -2224,7 +2222,7 @@ func TestScopedKeyManagerManagement(t *testing.T) {
 		t.Fatalf("addr type mismatch: expected %v, got %v",
 			WitnessPubKey, internalAddr[0].AddrType())
 	}
-	_, ok = internalAddr[0].Address().(*btcutil.AddressWitnessPubKeyHash)
+	_, ok = internalAddr[0].Address().(*ltcutil.AddressWitnessPubKeyHash)
 	if !ok {
 		t.Fatalf("wrong type: %T", externalAddr[0].Address())
 	}

@@ -10,13 +10,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/btcsuite/btclog"
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/btcsuite/btcwallet/rpc/legacyrpc"
-	"github.com/btcsuite/btcwallet/rpc/rpcserver"
-	"github.com/btcsuite/btcwallet/wallet"
-	"github.com/btcsuite/btcwallet/wtxmgr"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/rpc/legacyrpc"
+	"github.com/ltcsuite/ltcwallet/rpc/rpcserver"
+	"github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/wtxmgr"
 	"github.com/jrick/logrotate/rotator"
 	"github.com/lightninglabs/neutrino"
 )
@@ -53,13 +53,13 @@ var (
 	// is written to by the Write method of the logWriter type.
 	logRotatorPipe *io.PipeWriter
 
-	log          = backendLog.Logger("BTCW")
+	log          = backendLog.Logger("LTCW")
 	walletLog    = backendLog.Logger("WLLT")
 	txmgrLog     = backendLog.Logger("TMGR")
 	chainLog     = backendLog.Logger("CHNS")
 	grpcLog      = backendLog.Logger("GRPC")
 	legacyRPCLog = backendLog.Logger("RPCS")
-	btcnLog      = backendLog.Logger("BTCN")
+	btcnLog      = backendLog.Logger("LTCN")
 )
 
 // Initialize package-global logger variables.
@@ -75,13 +75,13 @@ func init() {
 
 // subsystemLoggers maps each subsystem identifier to its associated logger.
 var subsystemLoggers = map[string]btclog.Logger{
-	"BTCW": log,
+	"LTCW": log,
 	"WLLT": walletLog,
 	"TMGR": txmgrLog,
 	"CHNS": chainLog,
 	"GRPC": grpcLog,
 	"RPCS": legacyRPCLog,
-	"BTCN": btcnLog,
+	"LTCN": btcnLog,
 }
 
 // initLogRotator initializes the logging rotater to write logs to logFile and
@@ -133,11 +133,11 @@ func setLogLevels(logLevel string) {
 	}
 }
 
-// pickNoun returns the singular or plural form of a noun depending
-// on the count n.
-func pickNoun(n int, singular, plural string) string {
-	if n == 1 {
-		return singular
-	}
-	return plural
+// fatalf logs a message, flushes the logger, and finally exit the process with
+// a non-zero return code.
+func fatalf(format string, args ...interface{}) {
+	log.Errorf(format, args...)
+	os.Stdout.Sync()
+	logRotator.Close()
+	os.Exit(1)
 }

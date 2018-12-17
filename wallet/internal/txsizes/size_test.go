@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/btcsuite/btcd/wire"
-	. "github.com/btcsuite/btcwallet/wallet/internal/txsizes"
+	"github.com/ltcsuite/ltcd/wire"
+	. "github.com/ltcsuite/ltcwallet/wallet/internal/txsizes"
 )
 
 const (

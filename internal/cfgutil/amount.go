@@ -8,17 +8,17 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 )
 
-// AmountFlag embeds a btcutil.Amount and implements the flags.Marshaler and
+// AmountFlag embeds a ltcutil.Amount and implements the flags.Marshaler and
 // Unmarshaler interfaces so it can be used as a config struct field.
 type AmountFlag struct {
-	btcutil.Amount
+	ltcutil.Amount
 }
 
-// NewAmountFlag creates an AmountFlag with a default btcutil.Amount.
-func NewAmountFlag(defaultValue btcutil.Amount) *AmountFlag {
+// NewAmountFlag creates an AmountFlag with a default ltcutil.Amount.
+func NewAmountFlag(defaultValue ltcutil.Amount) *AmountFlag {
 	return &AmountFlag{defaultValue}
 }
 
@@ -29,12 +29,12 @@ func (a *AmountFlag) MarshalFlag() (string, error) {
 
 // UnmarshalFlag satisifes the flags.Unmarshaler interface.
 func (a *AmountFlag) UnmarshalFlag(value string) error {
-	value = strings.TrimSuffix(value, " BTC")
+	value = strings.TrimSuffix(value, " LTC")
 	valueF64, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return err
 	}
-	amount, err := btcutil.NewAmount(valueF64)
+	amount, err := ltcutil.NewAmount(valueF64)
 	if err != nil {
 		return err
 	}

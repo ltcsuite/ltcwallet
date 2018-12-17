@@ -11,7 +11,7 @@ Changes in 0.7.0 (Mon Nov 23 2015)
   - Bug fixes:
     - Removed data races in the RPC server (#292) and waddrmgr package
       (#293)
-    - Corrected handling of btcutil.AddressPubKey addresses when querying
+    - Corrected handling of ltcutil.AddressPubKey addresses when querying
       for a ManagedAddress from the address manager (#313)
     - Fixed signmessage and verifymessage algorithm to match the equivalent
       algorithms used by Core (#324)

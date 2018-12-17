@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcwallet/walletdb"
-	"github.com/btcsuite/btcwallet/walletdb/migration"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcwallet/walletdb"
+	"github.com/ltcsuite/ltcwallet/walletdb/migration"
 )
 
 // versions is a list of the different database versions. The last entry should
@@ -306,9 +306,9 @@ func populateBirthdayBlock(ns walletdb.ReadWriteBucket) error {
 		genesisTimestamp =
 			chaincfg.MainNetParams.GenesisBlock.Header.Timestamp
 
-	case *chaincfg.TestNet3Params.GenesisHash:
+	case *chaincfg.TestNet4Params.GenesisHash:
 		genesisTimestamp =
-			chaincfg.TestNet3Params.GenesisBlock.Header.Timestamp
+			chaincfg.TestNet4Params.GenesisBlock.Header.Timestamp
 
 	case *chaincfg.RegressionNetParams.GenesisHash:
 		genesisTimestamp =
