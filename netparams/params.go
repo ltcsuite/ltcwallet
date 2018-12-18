@@ -18,8 +18,8 @@ type Params struct {
 // btcd on the main network (wire.MainNet).
 var MainNetParams = Params{
 	Params:        &chaincfg.MainNetParams,
-	RPCClientPort: "8334",
-	RPCServerPort: "8332",
+	RPCClientPort: "9334",
+	RPCServerPort: "9332",
 }
 
 // TestNet4Params contains parameters specific running btcwallet and
@@ -27,7 +27,7 @@ var MainNetParams = Params{
 var TestNet4Params = Params{
 	Params:        &chaincfg.TestNet4Params,
 	RPCClientPort: "19334",
-	RPCServerPort: "18332",
+	RPCServerPort: "19332",
 }
 
 // SimNetParams contains parameters specific to the simulation test network

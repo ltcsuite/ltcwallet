@@ -15,22 +15,22 @@ import (
 	"github.com/lightninglabs/gozmq"
 )
 
-// BitcoindConn represents a persistent client connection to a bitcoind node
+// BitcoindConn represents a persistent client connection to a litecoind node
 // that listens for events read from a ZMQ connection.
 type BitcoindConn struct {
 	started int32 // To be used atomically.
 	stopped int32 // To be used atomically.
 
 	// rescanClientCounter is an atomic counter that assigns a unique ID to
-	// each new bitcoind rescan client using the current bitcoind
+	// each new litecoind rescan client using the current litecoind
 	// connection.
 	rescanClientCounter uint64
 
-	// chainParams identifies the current network the bitcoind node is
+	// chainParams identifies the current network the litecoind node is
 	// running on.
 	chainParams *chaincfg.Params
 
-	// client is the RPC client to the bitcoind node.
+	// client is the RPC client to the litecoind node.
 	client *rpcclient.Client
 
 	// zmqBlockHost is the host listening for ZMQ connections that will be
@@ -45,7 +45,7 @@ type BitcoindConn struct {
 	// event from the ZMQ connection.
 	zmqPollInterval time.Duration
 
-	// rescanClients is the set of active bitcoind rescan clients to which
+	// rescanClients is the set of active litecoind rescan clients to which
 	// ZMQ event notfications will be sent to.
 	rescanClientsMtx sync.Mutex
 	rescanClients    map[uint64]*BitcoindClient
@@ -91,7 +91,7 @@ func NewBitcoindConn(chainParams *chaincfg.Params,
 	return conn, nil
 }
 
-// Start attempts to establish a RPC and ZMQ connection to a bitcoind node. If
+// Start attempts to establish a RPC and ZMQ connection to a litecoind node. If
 // successful, a goroutine is spawned to read events from the ZMQ connection.
 // It's possible for this function to fail due to a limited number of connection
 // attempts. This is done to prevent waiting forever on the connection to be
@@ -113,7 +113,7 @@ func (c *BitcoindConn) Start() error {
 			c.chainParams.Net, net)
 	}
 
-	// Establish two different ZMQ connections to bitcoind to retrieve block
+	// Establish two different ZMQ connections to litecoind to retrieve block
 	// and transaction event notifications. We'll use two as a separation of
 	// concern to ensure one type of event isn't dropped from the connection
 	// queue due to another type of event filling it up.
@@ -142,7 +142,7 @@ func (c *BitcoindConn) Start() error {
 	return nil
 }
 
-// Stop terminates the RPC and ZMQ connection to a bitcoind node and removes any
+// Stop terminates the RPC and ZMQ connection to a litecoind node and removes any
 // active rescan clients.
 func (c *BitcoindConn) Stop() {
 	if !atomic.CompareAndSwapInt32(&c.stopped, 0, 1) {
@@ -168,7 +168,7 @@ func (c *BitcoindConn) blockEventHandler(conn *gozmq.Conn) {
 	defer c.wg.Done()
 	defer conn.Close()
 
-	log.Info("Started listening for bitcoind block notifications via ZMQ "+
+	log.Info("Started listening for litecoind block notifications via ZMQ "+
 		"on", c.zmqBlockHost)
 
 	for {
@@ -223,7 +223,7 @@ func (c *BitcoindConn) blockEventHandler(conn *gozmq.Conn) {
 			c.rescanClientsMtx.Unlock()
 		default:
 			// It's possible that the message wasn't fully read if
-			// bitcoind shuts down, which will produce an unreadable
+			// litecoind shuts down, which will produce an unreadable
 			// event type. To prevent from logging it, we'll make
 			// sure it conforms to the ASCII standard.
 			if eventType == "" || !isASCII(eventType) {
@@ -244,7 +244,7 @@ func (c *BitcoindConn) txEventHandler(conn *gozmq.Conn) {
 	defer c.wg.Done()
 	defer conn.Close()
 
-	log.Info("Started listening for bitcoind transaction notifications "+
+	log.Info("Started listening for litecoind transaction notifications "+
 		"via ZMQ on", c.zmqTxHost)
 
 	for {
@@ -299,7 +299,7 @@ func (c *BitcoindConn) txEventHandler(conn *gozmq.Conn) {
 			c.rescanClientsMtx.Unlock()
 		default:
 			// It's possible that the message wasn't fully read if
-			// bitcoind shuts down, which will produce an unreadable
+			// litecoind shuts down, which will produce an unreadable
 			// event type. To prevent from logging it, we'll make
 			// sure it conforms to the ASCII standard.
 			if eventType == "" || !isASCII(eventType) {
@@ -312,7 +312,7 @@ func (c *BitcoindConn) txEventHandler(conn *gozmq.Conn) {
 	}
 }
 
-// getCurrentNet returns the network on which the bitcoind node is running.
+// getCurrentNet returns the network on which the litecoind node is running.
 func (c *BitcoindConn) getCurrentNet() (wire.BitcoinNet, error) {
 	hash, err := c.client.GetBlockHash(0)
 	if err != nil {
@@ -331,7 +331,7 @@ func (c *BitcoindConn) getCurrentNet() (wire.BitcoinNet, error) {
 	}
 }
 
-// NewBitcoindClient returns a bitcoind client using the current bitcoind
+// NewBitcoindClient returns a litecoind client using the current litecoind
 // connection. This allows us to share the same connection using multiple
 // clients.
 func (c *BitcoindConn) NewBitcoindClient() *BitcoindClient {
