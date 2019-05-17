@@ -133,11 +133,11 @@ func setLogLevels(logLevel string) {
 	}
 }
 
-// fatalf logs a message, flushes the logger, and finally exit the process with
-// a non-zero return code.
-func fatalf(format string, args ...interface{}) {
-	log.Errorf(format, args...)
-	os.Stdout.Sync()
-	logRotator.Close()
-	os.Exit(1)
+// pickNoun returns the singular or plural form of a noun depending
+// on the count n.
+func pickNoun(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }

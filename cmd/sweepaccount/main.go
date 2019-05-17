@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh/terminal"
 
-	"github.com/btcsuite/btcd/btcjson"
+	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/txscript"
@@ -52,7 +52,7 @@ var opts = struct {
 	DestinationAccount    string              `long:"destacct" description:"Account to send sweeped outputs to"`
 	RequiredConfirmations int64               `long:"minconf" description:"Required confirmations to include an output"`
 }{
-	TestNet3:              false,
+	TestNet4:              false,
 	SimNet:                false,
 	RPCConnect:            "localhost",
 	RPCUsername:           "",
@@ -80,12 +80,12 @@ func init() {
 		os.Exit(1)
 	}
 
-	if opts.TestNet3 && opts.SimNet {
+	if opts.TestNet4 && opts.SimNet {
 		fatalf("Multiple bitcoin networks may not be used simultaneously")
 	}
 	var activeNet = &netparams.MainNetParams
-	if opts.TestNet3 {
-		activeNet = &netparams.TestNet3Params
+	if opts.TestNet4 {
+		activeNet = &netparams.TestNet4Params
 	} else if opts.SimNet {
 		activeNet = &netparams.SimNetParams
 	}

@@ -337,6 +337,14 @@ func (m *Manager) WatchOnly() bool {
 	m.mtx.RLock()
 	defer m.mtx.RUnlock()
 
+	return m.watchOnly()
+}
+
+// watchOnly returns true if the root manager is in watch only mode, and false
+// otherwise.
+//
+// NOTE: This method requires the Manager's lock to be held.
+func (m *Manager) watchOnly() bool {
 	return m.watchingOnly
 }
 
@@ -1405,7 +1413,7 @@ func loadManager(ns walletdb.ReadBucket, pubPassphrase []byte,
 	if err != nil {
 		return nil, maybeConvertDbError(err)
 	}
-	startBlock, err := fetchStartBlock(ns)
+	startBlock, err := FetchStartBlock(ns)
 	if err != nil {
 		return nil, maybeConvertDbError(err)
 	}
@@ -1800,7 +1808,7 @@ func Create(ns walletdb.ReadWriteBucket, seed, pubPassphrase, privPassphrase []b
 	}
 
 	// Save the initial synced to state.
-	err = putSyncedTo(ns, &syncInfo.syncedTo)
+	err = PutSyncedTo(ns, &syncInfo.syncedTo)
 	if err != nil {
 		return maybeConvertDbError(err)
 	}
