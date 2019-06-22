@@ -2,12 +2,14 @@ package waddrmgr
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
@@ -81,7 +83,7 @@ func TestMigrationPopulateBirthdayBlock(t *testing.T) {
 			block.Height = i
 			blockHash := bytes.Repeat([]byte(string(i)), 32)
 			copy(block.Hash[:], blockHash)
-			if err := putSyncedTo(ns, block); err != nil {
+			if err := PutSyncedTo(ns, block); err != nil {
 				return err
 			}
 		}
@@ -100,7 +102,7 @@ func TestMigrationPopulateBirthdayBlock(t *testing.T) {
 
 		// Finally, since the migration has not yet started, we should
 		// not be able to find the birthday block within the database.
-		_, err := fetchBirthdayBlock(ns)
+		_, err := FetchBirthdayBlock(ns)
 		if !IsError(err, ErrBirthdayBlockNotSet) {
 			return fmt.Errorf("expected ErrBirthdayBlockNotSet, "+
 				"got %v", err)
@@ -112,7 +114,7 @@ func TestMigrationPopulateBirthdayBlock(t *testing.T) {
 	// After the migration has completed, we should see that the birthday
 	// block now exists and is set to the correct expected height.
 	afterMigration := func(ns walletdb.ReadWriteBucket) error {
-		birthdayBlock, err := fetchBirthdayBlock(ns)
+		birthdayBlock, err := FetchBirthdayBlock(ns)
 		if err != nil {
 			return err
 		}
@@ -151,7 +153,7 @@ func TestMigrationPopulateBirthdayBlockEstimateTooFar(t *testing.T) {
 			block.Height = i
 			blockHash := bytes.Repeat([]byte(string(i)), 32)
 			copy(block.Hash[:], blockHash)
-			if err := putSyncedTo(ns, block); err != nil {
+			if err := PutSyncedTo(ns, block); err != nil {
 				return err
 			}
 		}
@@ -184,7 +186,7 @@ func TestMigrationPopulateBirthdayBlockEstimateTooFar(t *testing.T) {
 
 		// Finally, since the migration has not yet started, we should
 		// not be able to find the birthday block within the database.
-		_, err := fetchBirthdayBlock(ns)
+		_, err := FetchBirthdayBlock(ns)
 		if !IsError(err, ErrBirthdayBlockNotSet) {
 			return fmt.Errorf("expected ErrBirthdayBlockNotSet, "+
 				"got %v", err)
@@ -196,7 +198,7 @@ func TestMigrationPopulateBirthdayBlockEstimateTooFar(t *testing.T) {
 	// After the migration has completed, we should see that the birthday
 	// block now exists and is set to the correct expected height.
 	afterMigration := func(ns walletdb.ReadWriteBucket) error {
-		birthdayBlock, err := fetchBirthdayBlock(ns)
+		birthdayBlock, err := FetchBirthdayBlock(ns)
 		if err != nil {
 			return err
 		}
@@ -230,7 +232,7 @@ func TestMigrationResetSyncedBlockToBirthday(t *testing.T) {
 			block.Height = i
 			blockHash := bytes.Repeat([]byte(string(i)), 32)
 			copy(block.Hash[:], blockHash)
-			if err := putSyncedTo(ns, block); err != nil {
+			if err := PutSyncedTo(ns, block); err != nil {
 				return err
 			}
 		}
@@ -295,4 +297,155 @@ func TestMigrationResetSyncedBlockToBirthdayWithNoBirthdayBlock(t *testing.T) {
 		t, beforeMigration, afterMigration, resetSyncedBlockToBirthday,
 		true,
 	)
+}
+
+// TestMigrationStoreMaxReorgDepth ensures that the storeMaxReorgDepth migration
+// works as expected under different sync scenarios.
+func TestMigrationStoreMaxReorgDepth(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		numBlocks int32
+	}{
+		{
+			name:      "genesis only",
+			numBlocks: 0,
+		},
+		{
+			name:      "below max reorg depth",
+			numBlocks: MaxReorgDepth - 1,
+		},
+		{
+			name:      "above max reorg depth",
+			numBlocks: MaxReorgDepth + 1,
+		},
+		{
+			name:      "double max reorg depth",
+			numBlocks: MaxReorgDepth * 2,
+		},
+	}
+
+	for _, testCase := range testCases {
+		success := t.Run(testCase.name, func(t *testing.T) {
+			// We'll start the test by creating the number of blocks
+			// we'll add to the chain. We start from height 1 as the
+			// genesis block (height 0) is already included when the
+			// address manager is created.
+			blocks := make([]*BlockStamp, 0, testCase.numBlocks)
+			for i := int32(1); i <= testCase.numBlocks; i++ {
+				var hash chainhash.Hash
+				binary.BigEndian.PutUint32(hash[:], uint32(i))
+				blocks = append(blocks, &BlockStamp{
+					Hash:   hash,
+					Height: i,
+				})
+			}
+
+			// Before the migration, we'll go ahead and add all of
+			// the blocks created. This simulates the behavior of an
+			// existing synced chain. We won't use PutSyncedTo as
+			// that would remove the stale entries on its own.
+			beforeMigration := func(ns walletdb.ReadWriteBucket) error {
+				if testCase.numBlocks == 0 {
+					return nil
+				}
+
+				// Write all the block hash entries.
+				for _, block := range blocks {
+					err := addBlockHash(
+						ns, block.Height, block.Hash,
+					)
+					if err != nil {
+						return err
+					}
+					err = updateSyncedTo(ns, block)
+					if err != nil {
+						return err
+					}
+				}
+
+				// Check to make sure they've been added
+				// properly.
+				for _, block := range blocks {
+					hash, err := fetchBlockHash(
+						ns, block.Height,
+					)
+					if err != nil {
+						return err
+					}
+					if *hash != block.Hash {
+						return fmt.Errorf("expected "+
+							"hash %v for height "+
+							"%v, got %v",
+							block.Hash,
+							block.Height, hash)
+					}
+				}
+				block, err := fetchSyncedTo(ns)
+				if err != nil {
+					return err
+				}
+				expectedBlock := blocks[len(blocks)-1]
+				if block.Height != block.Height {
+					return fmt.Errorf("expected synced to "+
+						"block height %v, got %v",
+						expectedBlock.Height,
+						block.Height)
+				}
+				if block.Hash != block.Hash {
+					return fmt.Errorf("expected synced to "+
+						"block hash %v, got %v",
+						expectedBlock.Hash,
+						block.Hash)
+				}
+
+				return nil
+			}
+
+			// After the migration, we'll ensure we're unable to
+			// find all the block hashes that should have been
+			// removed.
+			afterMigration := func(ns walletdb.ReadWriteBucket) error {
+				maxStaleHeight := staleHeight(testCase.numBlocks)
+				for _, block := range blocks {
+					if block.Height <= maxStaleHeight {
+						_, err := fetchBlockHash(
+							ns, block.Height,
+						)
+						if IsError(err, ErrBlockNotFound) {
+							continue
+						}
+						return fmt.Errorf("expected "+
+							"ErrBlockNotFound for "+
+							"height %v, got %v",
+							block.Height, err)
+					}
+
+					hash, err := fetchBlockHash(
+						ns, block.Height,
+					)
+					if err != nil {
+						return err
+					}
+					if *hash != block.Hash {
+						return fmt.Errorf("expected "+
+							"hash %v for height "+
+							"%v, got %v",
+							block.Hash,
+							block.Height, hash)
+					}
+				}
+				return nil
+			}
+
+			applyMigration(
+				t, beforeMigration, afterMigration,
+				storeMaxReorgDepth, false,
+			)
+		})
+		if !success {
+			return
+		}
+	}
 }

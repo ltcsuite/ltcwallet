@@ -59,7 +59,7 @@ func (m *Manager) SetSyncedTo(ns walletdb.ReadWriteBucket, bs *BlockStamp) error
 	}
 
 	// Update the database.
-	err := putSyncedTo(ns, bs)
+	err := PutSyncedTo(ns, bs)
 	if err != nil {
 		return err
 	}
@@ -74,8 +74,8 @@ func (m *Manager) SetSyncedTo(ns walletdb.ReadWriteBucket, bs *BlockStamp) error
 // can use this information for intelligently initiating rescans to sync back to
 // the best chain from the last known good block.
 func (m *Manager) SyncedTo() BlockStamp {
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
+	m.mtx.RLock()
+	defer m.mtx.RUnlock()
 
 	return m.syncState.syncedTo
 }
@@ -85,8 +85,6 @@ func (m *Manager) SyncedTo() BlockStamp {
 // reorg is taking place and how far back it goes.
 func (m *Manager) BlockHash(ns walletdb.ReadBucket, height int32) (
 	*chainhash.Hash, error) {
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
 
 	return fetchBlockHash(ns, height)
 }
@@ -94,8 +92,8 @@ func (m *Manager) BlockHash(ns walletdb.ReadBucket, height int32) (
 // Birthday returns the birthday, or earliest time a key could have been used,
 // for the manager.
 func (m *Manager) Birthday() time.Time {
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
+	m.mtx.RLock()
+	defer m.mtx.RUnlock()
 
 	return m.birthday
 }
@@ -115,7 +113,7 @@ func (m *Manager) SetBirthday(ns walletdb.ReadWriteBucket,
 // been used, for the manager. A boolean is also returned to indicate whether
 // the birthday block has been verified as correct.
 func (m *Manager) BirthdayBlock(ns walletdb.ReadBucket) (BlockStamp, bool, error) {
-	birthdayBlock, err := fetchBirthdayBlock(ns)
+	birthdayBlock, err := FetchBirthdayBlock(ns)
 	if err != nil {
 		return BlockStamp{}, false, err
 	}
