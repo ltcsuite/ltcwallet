@@ -8,7 +8,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/rpcclient"
+//	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
@@ -400,6 +400,7 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 	}
 
 	s.clientMtx.Lock()
+/* commented out until ltcsuite/neutrino is updated
 	newRescan := neutrino.NewRescan(
 		&neutrino.RescanChainSource{
 			ChainService: s.CS,
@@ -417,6 +418,7 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 	)
 	s.rescan = newRescan
 	s.rescanErr = s.rescan.Start()
+*/
 	s.clientMtx.Unlock()
 
 	return nil
@@ -455,6 +457,7 @@ func (s *NeutrinoClient) NotifyReceived(addrs []ltcutil.Address) error {
 	s.lastFilteredBlockHeader = nil
 
 	// Rescan with just the specified addresses.
+/* commented out until ltcsuite/neutrino is updated
 	newRescan := neutrino.NewRescan(
 		&neutrino.RescanChainSource{
 			ChainService: s.CS,
@@ -470,6 +473,7 @@ func (s *NeutrinoClient) NotifyReceived(addrs []ltcutil.Address) error {
 	)
 	s.rescan = newRescan
 	s.rescanErr = s.rescan.Start()
+*/
 	s.clientMtx.Unlock()
 	return nil
 }

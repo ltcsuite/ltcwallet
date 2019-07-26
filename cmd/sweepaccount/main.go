@@ -42,7 +42,7 @@ func errContext(err error, context string) error {
 
 // Flags.
 var opts = struct {
-	TestNet4              bool                `long:"testnet" description:"Use the test litecoin network (version 4)"`
+	TestNet3              bool                `long:"testnet" description:"Use the test litecoin network (version 4)"`
 	SimNet                bool                `long:"simnet" description:"Use the simulation bitcoin network"`
 	RPCConnect            string              `short:"c" long:"connect" description:"Hostname[:port] of wallet RPC server"`
 	RPCUsername           string              `short:"u" long:"rpcuser" description:"Wallet RPC username"`
@@ -85,7 +85,7 @@ func init() {
 	}
 	var activeNet = &netparams.MainNetParams
 	if opts.TestNet3 {
-		activeNet = &netparams.TestNet3Params
+		activeNet = &netparams.TestNet4Params
 	} else if opts.SimNet {
 		activeNet = &netparams.SimNetParams
 	}
