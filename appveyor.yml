@@ -1,6 +1,6 @@
 version: "{build}"
 
-clone_folder: c:\projects\src\github.com\btcsuite\btcwallet
+clone_folder: c:\projects\src\github.com\ltcsuite\ltcwallet
 
 environment:
  PATH: c:\projects\bin;%PATH%

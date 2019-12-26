@@ -57,7 +57,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/btcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var certificateFile = filepath.Join(ltcutil.AppDataDir("ltcwallet", false), "rpc.cert")
@@ -394,7 +394,7 @@ Full instructions for this procedure can be found
 Generate Python stubs from the `.proto`:
 
 ```bash
-$ protoc -I /path/to/btcsuite/ltcwallet/rpc --python_out=. --grpc_out=. \
+$ protoc -I /path/to/ltcsuite/ltcwallet/rpc --python_out=. --grpc_out=. \
   --plugin=protoc-gen-grpc=$(which grpc_python_plugin) \
   /path/to/ltcwallet/rpc/api.proto
 ```
