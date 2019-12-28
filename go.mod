@@ -10,16 +10,10 @@ require (
 	github.com/jessevdk/go-flags v1.4.0
 	github.com/jrick/logrotate v1.0.0
 	github.com/lightninglabs/gozmq v0.0.0-20180324010646-462a8a753885
-	github.com/lightninglabs/neutrino v0.0.0-20190725230401-ddf667a8b5c4 // indirect
-	github.com/ltcsuite/ltcd v0.0.0-20190519120615-e27ee083f08f
-	github.com/ltcsuite/ltcutil v0.0.0
-	github.com/ltcsuite/neutrino v0.0.0-20190105125846-26fb2f58fe6b
 	go.etcd.io/bbolt v1.3.3 // indirect
 	golang.org/x/crypto v0.0.0-20190701094942-4def268fd1a4
 	golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3
 	google.golang.org/grpc v1.18.0
 )
 
-replace github.com/ltcsuite/ltcutil => ../ltcutil
-
-replace github.com/ltcsuite/ltcd => ../ltcd
+go 1.13
