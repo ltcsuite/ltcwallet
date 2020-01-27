@@ -7,7 +7,7 @@
 
 set -ex
 
-test_targets=$(go list ./...)
+test_targets=$(go list -deps ./... | grep 'ltcwallet')
 
 # Automatic checks
 test -z "$(go fmt $test_targets | tee /dev/stderr)"

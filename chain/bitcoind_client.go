@@ -378,6 +378,12 @@ func (c *BitcoindClient) RescanBlocks(
 			continue
 		}
 
+		// Prevent fetching the block completely if we know we shouldn't
+		// filter it.
+		if !c.shouldFilterBlock(time.Unix(header.Time, 0)) {
+			continue
+		}
+
 		block, err := c.GetBlock(&hash)
 		if err != nil {
 			log.Warnf("Unable to get block %s from bitcoind: %s",
@@ -1128,14 +1134,32 @@ func (c *BitcoindClient) rescan(start chainhash.Hash) error {
 	return nil
 }
 
+// shouldFilterBlock determines whether we should filter a block based on its
+// timestamp or our watch list.
+func (c *BitcoindClient) shouldFilterBlock(blockTimestamp time.Time) bool {
+	c.watchMtx.RLock()
+	hasEmptyFilter := len(c.watchedAddresses) == 0 &&
+		len(c.watchedOutPoints) == 0 && len(c.watchedTxs) == 0
+	c.watchMtx.RUnlock()
+
+	return !(blockTimestamp.Before(c.birthday) || hasEmptyFilter)
+}
+
 // filterBlock filters a block for watched outpoints and addresses, and returns
 // any matching transactions, sending notifications along the way.
 func (c *BitcoindClient) filterBlock(block *wire.MsgBlock, height int32,
 	notify bool) []*wtxmgr.TxRecord {
 
-	// If this block happened before the client's birthday, then we'll skip
-	// it entirely.
-	if block.Header.Timestamp.Before(c.birthday) {
+	// If this block happened before the client's birthday or we have
+	// nothing to filter for, then we'll skip it entirely.
+	blockHash := block.BlockHash()
+	if !c.shouldFilterBlock(block.Header.Timestamp) {
+		if notify {
+			c.onFilteredBlockConnected(height, &block.Header, nil)
+			c.onBlockConnected(
+				&blockHash, height, block.Header.Timestamp,
+			)
+		}
 		return nil
 	}
 
@@ -1146,7 +1170,6 @@ func (c *BitcoindClient) filterBlock(block *wire.MsgBlock, height int32,
 
 	// Create a block details template to use for all of the confirmed
 	// transactions found within this block.
-	blockHash := block.BlockHash()
 	blockDetails := &btcjson.BlockDetails{
 		Hash:   blockHash.String(),
 		Height: height,

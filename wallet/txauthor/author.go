@@ -13,10 +13,16 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
-
-	h "github.com/ltcsuite/ltcwallet/internal/helpers"
-	"github.com/ltcsuite/ltcwallet/wallet/internal/txsizes"
+	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
 )
+
+// SumOutputValues sums up the list of TxOuts and returns an Amount.
+func SumOutputValues(outputs []*wire.TxOut) (totalOutput ltcutil.Amount) {
+	for _, txOut := range outputs {
+		totalOutput += ltcutil.Amount(txOut.Value)
+	}
+	return totalOutput
+}
 
 // InputSource provides transaction inputs referencing spendable outputs to
 // construct a transaction outputting some target amount.  If the target amount
@@ -80,7 +86,7 @@ type ChangeSource func() ([]byte, error)
 func NewUnsignedTransaction(outputs []*wire.TxOut, relayFeePerKb ltcutil.Amount,
 	fetchInputs InputSource, fetchChange ChangeSource) (*AuthoredTx, error) {
 
-	targetAmount := h.SumOutputValues(outputs)
+	targetAmount := SumOutputValues(outputs)
 	estimatedSize := txsizes.EstimateVirtualSize(0, 1, 0, outputs, true)
 	targetFee := txrules.FeeForSerializeSize(relayFeePerKb, estimatedSize)
 

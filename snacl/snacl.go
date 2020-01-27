@@ -14,8 +14,8 @@ import (
 	"runtime/debug"
 
 	"github.com/ltcsuite/ltcwallet/internal/zero"
-	"github.com/btcsuite/golangcrypto/nacl/secretbox"
-	"github.com/btcsuite/golangcrypto/scrypt"
+	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/crypto/scrypt"
 )
 
 var (

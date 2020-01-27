@@ -14,7 +14,7 @@ import (
 
 	"github.com/ltcsuite/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcwallet/internal/legacy/keystore"
-	"github.com/btcsuite/golangcrypto/ssh/terminal"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 // ProvideSeed is used to prompt for the wallet seed which maybe required during

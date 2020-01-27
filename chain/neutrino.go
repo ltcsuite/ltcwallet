@@ -8,7 +8,6 @@ import (
 
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-//	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
@@ -19,7 +18,7 @@ import (
 	"github.com/ltcsuite/neutrino"
 )
 
-// NeutrinoClient is an implementation of the btcwalet chain.Interface interface.
+// NeutrinoClient is an implementation of the ltcwallet chain.Interface interface.
 type NeutrinoClient struct {
 	CS *neutrino.ChainService
 
@@ -106,7 +105,7 @@ func (s *NeutrinoClient) WaitForShutdown() {
 func (s *NeutrinoClient) GetBlock(hash *chainhash.Hash) (*wire.MsgBlock, error) {
 	// TODO(roasbeef): add a block cache?
 	//  * which evication strategy? depends on use case
-	//  Should the block cache be INSIDE neutrino instead of in btcwallet?
+	//  Should the block cache be INSIDE neutrino instead of in ltcwallet?
 	block, err := s.CS.GetBlock(*hash)
 	if err != nil {
 		return nil, err
@@ -400,7 +399,7 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 	}
 
 	s.clientMtx.Lock()
-/* commented out until ltcsuite/neutrino is updated
+	/* commented out until ltcsuite/neutrino is updated
 	newRescan := neutrino.NewRescan(
 		&neutrino.RescanChainSource{
 			ChainService: s.CS,
@@ -410,7 +409,7 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 			OnFilteredBlockConnected: s.onFilteredBlockConnected,
 			OnBlockDisconnected:      s.onBlockDisconnected,
 		}),
-		neutrino.StartBlock(&waddrmgr.BlockStamp{Hash: *startHash}),
+		neutrino.StartBlock(&headerfs.BlockStamp{Hash: *startHash}),
 		neutrino.StartTime(s.startTime),
 		neutrino.QuitChan(s.rescanQuit),
 		neutrino.WatchAddrs(addrs...),
@@ -418,7 +417,7 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 	)
 	s.rescan = newRescan
 	s.rescanErr = s.rescan.Start()
-*/
+	*/
 	s.clientMtx.Unlock()
 
 	return nil
@@ -457,7 +456,7 @@ func (s *NeutrinoClient) NotifyReceived(addrs []ltcutil.Address) error {
 	s.lastFilteredBlockHeader = nil
 
 	// Rescan with just the specified addresses.
-/* commented out until ltcsuite/neutrino is updated
+	/* commented out until ltcsuite/neutrino is updated
 	newRescan := neutrino.NewRescan(
 		&neutrino.RescanChainSource{
 			ChainService: s.CS,
@@ -473,7 +472,7 @@ func (s *NeutrinoClient) NotifyReceived(addrs []ltcutil.Address) error {
 	)
 	s.rescan = newRescan
 	s.rescanErr = s.rescan.Start()
-*/
+	*/
 	s.clientMtx.Unlock()
 	return nil
 }
