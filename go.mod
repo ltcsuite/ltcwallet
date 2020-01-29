@@ -22,14 +22,14 @@ require (
 	google.golang.org/grpc v1.18.0
 )
 
-replace github.com/btcsuite/btcwallet/walletdb => ./walletdb
+replace github.com/ltcsuite/ltcwallet/walletdb => ./walletdb
 
-replace github.com/btcsuite/btcwallet/wtxmgr => ./wtxmgr
+replace github.com/ltcsuite/ltcwallet/wtxmgr => ./wtxmgr
 
-replace github.com/btcsuite/btcwallet/wallet/txauthor => ./wallet/txauthor
+replace github.com/ltcsuite/ltcwallet/wallet/txauthor => ./wallet/txauthor
 
-replace github.com/btcsuite/btcwallet/wallet/txrules => ./wallet/txrules
+replace github.com/ltcsuite/ltcwallet/wallet/txrules => ./wallet/txrules
 
-replace github.com/btcsuite/btcwallet/wallet/txsizes => ./wallet/txsizes
+replace github.com/ltcsuite/ltcwallet/wallet/txsizes => ./wallet/txsizes
 
 go 1.13
