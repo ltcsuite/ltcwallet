@@ -1,4 +1,4 @@
-module github.com/btcsuite/btcwallet/walletdb
+module github.com/ltcsuite/ltcwallet/walletdb
 
 go 1.12
 
