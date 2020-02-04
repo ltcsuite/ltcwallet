@@ -8,5 +8,3 @@ require (
 	github.com/ltcsuite/ltcutil v0.0.0-20191227053721-6bec450ea6ad
 	github.com/ltcsuite/ltcwallet/walletdb v1.2.0
 )
-
-replace github.com/ltcsuite/ltcwallet/walletdb => ../walletdb
