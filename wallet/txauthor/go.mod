@@ -9,7 +9,3 @@ require (
 	github.com/ltcsuite/ltcwallet/wallet/txsizes v1.0.0
 	github.com/ltcsuite/ltcwallet v0.11.1-beta
 )
-
-replace github.com/ltcsuite/ltcwallet/wallet/txrules => ../txrules
-
-replace github.com/ltcsuite/ltcwallet/wallet/txsizes => ../txsizes
