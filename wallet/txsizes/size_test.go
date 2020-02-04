@@ -1,4 +1,4 @@
-package txsizes_test
+package txsizes
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/ltcsuite/ltcd/wire"
-	. "github.com/ltcsuite/ltcwallet/wallet/internal/txsizes"
 )
 
 const (

@@ -3,19 +3,42 @@ package chain
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/lightninglabs/gozmq"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightninglabs/gozmq"
 )
 
-// BitcoindConn represents a persistent client connection to a litecoind node
+const (
+	// rawBlockZMQCommand is the command used to receive raw block
+	// notifications from litecoind through ZMQ.
+	rawBlockZMQCommand = "rawblock"
+
+	// rawTxZMQCommand is the command used to receive raw transaction
+	// notifications from litecoind through ZMQ.
+	rawTxZMQCommand = "rawtx"
+
+	// maxRawBlockSize is the maximum size in bytes for a raw block received
+	// from litecoind through ZMQ.
+	maxRawBlockSize = 4e6
+
+	// maxRawTxSize is the maximum size in bytes for a raw transaction
+	// received from litecoind through ZMQ.
+	maxRawTxSize = maxRawBlockSize
+
+	// seqNumLen is the length of the sequence number of a message sent from
+	// litecoind through ZMQ.
+	seqNumLen = 4
+)
+
+// LitecoindConn represents a persistent client connection to a litecoind node
 // that listens for events read from a ZMQ connection.
 type BitcoindConn struct {
 	started int32 // To be used atomically.
@@ -33,17 +56,13 @@ type BitcoindConn struct {
 	// client is the RPC client to the litecoind node.
 	client *rpcclient.Client
 
-	// zmqBlockHost is the host listening for ZMQ connections that will be
-	// responsible for delivering raw transaction events.
-	zmqBlockHost string
+	// zmqBlockConn is the ZMQ connection we'll use to read raw block
+	// events.
+	zmqBlockConn *gozmq.Conn
 
-	// zmqTxHost is the host listening for ZMQ connections that will be
-	// responsible for delivering raw transaction events.
-	zmqTxHost string
-
-	// zmqPollInterval is the interval at which we'll attempt to retrieve an
-	// event from the ZMQ connection.
-	zmqPollInterval time.Duration
+	// zmqTxConn is the ZMQ connection we'll use to read raw transaction
+	// events.
+	zmqTxConn *gozmq.Conn
 
 	// rescanClients is the set of active litecoind rescan clients to which
 	// ZMQ event notfications will be sent to.
@@ -55,10 +74,9 @@ type BitcoindConn struct {
 }
 
 // NewBitcoindConn creates a client connection to the node described by the host
-// string. The connection is not established immediately, but must be done using
-// the Start method. If the remote node does not operate on the same bitcoin
-// network as described by the passed chain parameters, the connection will be
-// disconnected.
+// string. The ZMQ connections are established immediately to ensure liveness.
+// If the remote node does not operate on the same bitcoin network as described
+// by the passed chain parameters, the connection will be disconnected.
 func NewBitcoindConn(chainParams *chaincfg.Params,
 	host, user, pass, zmqBlockHost, zmqTxHost string,
 	zmqPollInterval time.Duration) (*BitcoindConn, error) {
@@ -78,14 +96,34 @@ func NewBitcoindConn(chainParams *chaincfg.Params,
 		return nil, err
 	}
 
+	// Establish two different ZMQ connections to bitcoind to retrieve block
+	// and transaction event notifications. We'll use two as a separation of
+	// concern to ensure one type of event isn't dropped from the connection
+	// queue due to another type of event filling it up.
+	zmqBlockConn, err := gozmq.Subscribe(
+		zmqBlockHost, []string{rawBlockZMQCommand}, zmqPollInterval,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to subscribe for zmq block "+
+			"events: %v", err)
+	}
+
+	zmqTxConn, err := gozmq.Subscribe(
+		zmqTxHost, []string{rawTxZMQCommand}, zmqPollInterval,
+	)
+	if err != nil {
+		zmqBlockConn.Close()
+		return nil, fmt.Errorf("unable to subscribe for zmq tx "+
+			"events: %v", err)
+	}
+
 	conn := &BitcoindConn{
-		chainParams:     chainParams,
-		client:          client,
-		zmqBlockHost:    zmqBlockHost,
-		zmqTxHost:       zmqTxHost,
-		zmqPollInterval: zmqPollInterval,
-		rescanClients:   make(map[uint64]*BitcoindClient),
-		quit:            make(chan struct{}),
+		chainParams:   chainParams,
+		client:        client,
+		zmqBlockConn:  zmqBlockConn,
+		zmqTxConn:     zmqTxConn,
+		rescanClients: make(map[uint64]*BitcoindClient),
+		quit:          make(chan struct{}),
 	}
 
 	return conn, nil
@@ -104,40 +142,16 @@ func (c *BitcoindConn) Start() error {
 	// Verify that the node is running on the expected network.
 	net, err := c.getCurrentNet()
 	if err != nil {
-		c.client.Disconnect()
 		return err
 	}
 	if net != c.chainParams.Net {
-		c.client.Disconnect()
 		return fmt.Errorf("expected network %v, got %v",
 			c.chainParams.Net, net)
 	}
 
-	// Establish two different ZMQ connections to litecoind to retrieve block
-	// and transaction event notifications. We'll use two as a separation of
-	// concern to ensure one type of event isn't dropped from the connection
-	// queue due to another type of event filling it up.
-	zmqBlockConn, err := gozmq.Subscribe(
-		c.zmqBlockHost, []string{"rawblock"}, c.zmqPollInterval,
-	)
-	if err != nil {
-		c.client.Disconnect()
-		return fmt.Errorf("unable to subscribe for zmq block events: "+
-			"%v", err)
-	}
-
-	zmqTxConn, err := gozmq.Subscribe(
-		c.zmqTxHost, []string{"rawtx"}, c.zmqPollInterval,
-	)
-	if err != nil {
-		c.client.Disconnect()
-		return fmt.Errorf("unable to subscribe for zmq tx events: %v",
-			err)
-	}
-
 	c.wg.Add(2)
-	go c.blockEventHandler(zmqBlockConn)
-	go c.txEventHandler(zmqTxConn)
+	go c.blockEventHandler()
+	go c.txEventHandler()
 
 	return nil
 }
@@ -155,6 +169,8 @@ func (c *BitcoindConn) Stop() {
 
 	close(c.quit)
 	c.client.Shutdown()
+	c.zmqBlockConn.Close()
+	c.zmqTxConn.Close()
 
 	c.client.WaitForShutdown()
 	c.wg.Wait()
@@ -164,12 +180,25 @@ func (c *BitcoindConn) Stop() {
 // forwards them along to the current rescan clients.
 //
 // NOTE: This must be run as a goroutine.
-func (c *BitcoindConn) blockEventHandler(conn *gozmq.Conn) {
+func (c *BitcoindConn) blockEventHandler() {
 	defer c.wg.Done()
-	defer conn.Close()
 
 	log.Info("Started listening for litecoind block notifications via ZMQ "+
-		"on", c.zmqBlockHost)
+		"on", c.zmqBlockConn.RemoteAddr())
+
+	// Set up the buffers we expect our messages to consume. ZMQ
+	// messages from litecoind include three parts: the command, the
+	// data, and the sequence number.
+	//
+	// We'll allocate a fixed data slice that we'll reuse when reading
+	// blocks from litecoind through ZMQ. There's no need to recycle this
+	// slice (zero out) after using it, as further reads will overwrite the
+	// slice and we'll only be deserializing the bytes needed.
+	var (
+		command [len(rawBlockZMQCommand)]byte
+		seqNum  [seqNumLen]byte
+		data    = make([]byte, maxRawBlockSize)
+	)
 
 	for {
 		// Before attempting to read from the ZMQ socket, we'll make
@@ -181,29 +210,41 @@ func (c *BitcoindConn) blockEventHandler(conn *gozmq.Conn) {
 		}
 
 		// Poll an event from the ZMQ socket.
-		msgBytes, err := conn.Receive()
+		var (
+			bufs = [][]byte{command[:], data, seqNum[:]}
+			err  error
+		)
+		bufs, err = c.zmqBlockConn.Receive(bufs)
 		if err != nil {
+			// EOF should only be returned if the connection was
+			// explicitly closed, so we can exit at this point.
+			if err == io.EOF {
+				return
+			}
+
 			// It's possible that the connection to the socket
 			// continuously times out, so we'll prevent logging this
 			// error to prevent spamming the logs.
 			netErr, ok := err.(net.Error)
 			if ok && netErr.Timeout() {
+				log.Trace("Re-establishing timed out ZMQ " +
+					"block connection")
 				continue
 			}
 
-			log.Errorf("Unable to receive ZMQ rawblock message: %v",
-				err)
+			log.Errorf("Unable to receive ZMQ %v message: %v",
+				rawBlockZMQCommand, err)
 			continue
 		}
 
 		// We have an event! We'll now ensure it is a block event,
 		// deserialize it, and report it to the different rescan
 		// clients.
-		eventType := string(msgBytes[0])
+		eventType := string(bufs[0])
 		switch eventType {
-		case "rawblock":
+		case rawBlockZMQCommand:
 			block := &wire.MsgBlock{}
-			r := bytes.NewReader(msgBytes[1])
+			r := bytes.NewReader(bufs[1])
 			if err := block.Deserialize(r); err != nil {
 				log.Errorf("Unable to deserialize block: %v",
 					err)
@@ -230,8 +271,9 @@ func (c *BitcoindConn) blockEventHandler(conn *gozmq.Conn) {
 				continue
 			}
 
-			log.Warnf("Received unexpected event type from "+
-				"rawblock subscription: %v", eventType)
+			log.Warnf("Received unexpected event type from %v "+
+				"subscription: %v", rawBlockZMQCommand,
+				eventType)
 		}
 	}
 }
@@ -240,12 +282,25 @@ func (c *BitcoindConn) blockEventHandler(conn *gozmq.Conn) {
 // them along to the current rescan clients.
 //
 // NOTE: This must be run as a goroutine.
-func (c *BitcoindConn) txEventHandler(conn *gozmq.Conn) {
+func (c *BitcoindConn) txEventHandler() {
 	defer c.wg.Done()
-	defer conn.Close()
 
 	log.Info("Started listening for litecoind transaction notifications "+
-		"via ZMQ on", c.zmqTxHost)
+		"via ZMQ on", c.zmqTxConn.RemoteAddr())
+
+	// Set up the buffers we expect our messages to consume. ZMQ
+	// messages from litecoind include three parts: the command, the
+	// data, and the sequence number.
+	//
+	// We'll allocate a fixed data slice that we'll reuse when reading
+	// transactions from litecoind through ZMQ. There's no need to recycle
+	// this slice (zero out) after using it, as further reads will overwrite
+	// the slice and we'll only be deserializing the bytes needed.
+	var (
+		command [len(rawTxZMQCommand)]byte
+		seqNum  [seqNumLen]byte
+		data    = make([]byte, maxRawTxSize)
+	)
 
 	for {
 		// Before attempting to read from the ZMQ socket, we'll make
@@ -257,29 +312,41 @@ func (c *BitcoindConn) txEventHandler(conn *gozmq.Conn) {
 		}
 
 		// Poll an event from the ZMQ socket.
-		msgBytes, err := conn.Receive()
+		var (
+			bufs = [][]byte{command[:], data, seqNum[:]}
+			err  error
+		)
+		bufs, err = c.zmqTxConn.Receive(bufs)
 		if err != nil {
+			// EOF should only be returned if the connection was
+			// explicitly closed, so we can exit at this point.
+			if err == io.EOF {
+				return
+			}
+
 			// It's possible that the connection to the socket
 			// continuously times out, so we'll prevent logging this
 			// error to prevent spamming the logs.
 			netErr, ok := err.(net.Error)
 			if ok && netErr.Timeout() {
+				log.Trace("Re-establishing timed out ZMQ " +
+					"transaction connection")
 				continue
 			}
 
-			log.Errorf("Unable to receive ZMQ rawtx message: %v",
-				err)
+			log.Errorf("Unable to receive ZMQ %v message: %v",
+				rawTxZMQCommand, err)
 			continue
 		}
 
 		// We have an event! We'll now ensure it is a transaction event,
 		// deserialize it, and report it to the different rescan
 		// clients.
-		eventType := string(msgBytes[0])
+		eventType := string(bufs[0])
 		switch eventType {
-		case "rawtx":
+		case rawTxZMQCommand:
 			tx := &wire.MsgTx{}
-			r := bytes.NewReader(msgBytes[1])
+			r := bytes.NewReader(bufs[1])
 			if err := tx.Deserialize(r); err != nil {
 				log.Errorf("Unable to deserialize "+
 					"transaction: %v", err)
@@ -306,8 +373,8 @@ func (c *BitcoindConn) txEventHandler(conn *gozmq.Conn) {
 				continue
 			}
 
-			log.Warnf("Received unexpected event type from rawtx "+
-				"subscription: %v", eventType)
+			log.Warnf("Received unexpected event type from %v "+
+				"subscription: %v", rawTxZMQCommand, eventType)
 		}
 	}
 }

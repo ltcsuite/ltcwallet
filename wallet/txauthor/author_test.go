@@ -2,17 +2,15 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-package txauthor_test
+package txauthor
 
 import (
 	"testing"
 
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
-	. "github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
-
-	"github.com/ltcsuite/ltcwallet/wallet/internal/txsizes"
+	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
 )
 
 func p2pkhOutputs(amounts ...ltcutil.Amount) []*wire.TxOut {

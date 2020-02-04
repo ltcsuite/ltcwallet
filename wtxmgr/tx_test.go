@@ -51,7 +51,7 @@ func testDB() (walletdb.DB, func(), error) {
 	if err != nil {
 		return nil, func() {}, err
 	}
-	db, err := walletdb.Create("bdb", filepath.Join(tmpDir, "db"))
+	db, err := walletdb.Create("bdb", filepath.Join(tmpDir, "db"), true)
 	return db, func() { os.RemoveAll(tmpDir) }, err
 }
 
@@ -63,7 +63,7 @@ func testStore() (*Store, walletdb.DB, func(), error) {
 		return nil, nil, func() {}, err
 	}
 
-	db, err := walletdb.Create("bdb", filepath.Join(tmpDir, "db"))
+	db, err := walletdb.Create("bdb", filepath.Join(tmpDir, "db"), true)
 	if err != nil {
 		os.RemoveAll(tmpDir)
 		return nil, nil, nil, err
@@ -162,7 +162,7 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: 0,
 			unc: ltcutil.Amount(TstRecvTx.MsgTx().TxOut[0].Value),
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstRecvTx.Hash(),
 					Index: 0,
 				}: {},
@@ -189,7 +189,7 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: 0,
 			unc: ltcutil.Amount(TstRecvTx.MsgTx().TxOut[0].Value),
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstRecvTx.Hash(),
 					Index: 0,
 				}: {},
@@ -216,7 +216,7 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: ltcutil.Amount(TstRecvTx.MsgTx().TxOut[0].Value),
 			unc: 0,
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstRecvTx.Hash(),
 					Index: 0,
 				}: {},
@@ -241,7 +241,7 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: ltcutil.Amount(TstRecvTx.MsgTx().TxOut[0].Value),
 			unc: 0,
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstRecvTx.Hash(),
 					Index: 0,
 				}: {},
@@ -257,7 +257,7 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: 0,
 			unc: ltcutil.Amount(TstRecvTx.MsgTx().TxOut[0].Value),
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstRecvTx.Hash(),
 					Index: 0,
 				}: {},
@@ -284,7 +284,7 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: ltcutil.Amount(TstDoubleSpendTx.MsgTx().TxOut[0].Value),
 			unc: 0,
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstDoubleSpendTx.Hash(),
 					Index: 0,
 				}: {},
@@ -343,7 +343,7 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: 0,
 			unc: ltcutil.Amount(TstSpendingTx.MsgTx().TxOut[0].Value),
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 0,
 				}: {},
@@ -369,11 +369,11 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: 0,
 			unc: ltcutil.Amount(TstSpendingTx.MsgTx().TxOut[0].Value + TstSpendingTx.MsgTx().TxOut[1].Value),
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 0,
 				}: {},
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 1,
 				}: {},
@@ -395,11 +395,11 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: ltcutil.Amount(TstSpendingTx.MsgTx().TxOut[0].Value + TstSpendingTx.MsgTx().TxOut[1].Value),
 			unc: 0,
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 0,
 				}: {},
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 1,
 				}: {},
@@ -415,11 +415,11 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: ltcutil.Amount(TstSpendingTx.MsgTx().TxOut[0].Value + TstSpendingTx.MsgTx().TxOut[1].Value),
 			unc: 0,
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 0,
 				}: {},
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 1,
 				}: {},
@@ -435,11 +435,11 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 			bal: 0,
 			unc: ltcutil.Amount(TstSpendingTx.MsgTx().TxOut[0].Value + TstSpendingTx.MsgTx().TxOut[1].Value),
 			unspents: map[wire.OutPoint]struct{}{
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 0,
 				}: {},
-				wire.OutPoint{
+				{
 					Hash:  *TstSpendingTx.Hash(),
 					Index: 1,
 				}: {},
@@ -1460,6 +1460,144 @@ func TestRemoveUnminedTx(t *testing.T) {
 	checkBalance(ltcutil.Amount(initialBalance), true)
 }
 
+// TestInsertMempoolTxAlreadyConfirmed ensures that transactions that already
+// exist within the store as confirmed cannot be added as unconfirmed.
+func TestInsertMempoolTxAlreadyConfirmed(t *testing.T) {
+	t.Parallel()
+
+	store, db, teardown, err := testStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer teardown()
+
+	// In order to reproduce real-world scenarios, we'll use a new database
+	// transaction for each interaction with the wallet.
+	//
+	// We'll start off the test by creating a new coinbase output at height
+	// 100 and inserting it into the store.
+	b100 := &BlockMeta{
+		Block: Block{Height: 100},
+		Time:  time.Now(),
+	}
+	tx := newCoinBase(1e8)
+	txRec, err := NewTxRecordFromMsgTx(tx, b100.Time)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		if err := store.InsertTx(ns, txRec, b100); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// checkStore is a helper we'll use to ensure the transaction only
+	// exists within the store's confirmed bucket.
+	checkStore := func() {
+		t.Helper()
+		commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+			if existsRawUnmined(ns, txRec.Hash[:]) != nil {
+				t.Fatalf("expected transaction to not exist " +
+					"in unconfirmed bucket")
+			}
+			_, v := existsTxRecord(ns, &txRec.Hash, &b100.Block)
+			if v == nil {
+				t.Fatalf("expected transaction to exist in " +
+					"confirmed bucket")
+			}
+		})
+	}
+
+	checkStore()
+
+	// Inserting the transaction again as unconfirmed should result in a
+	// NOP, i.e., no error should be returned and no disk modifications are
+	// needed.
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		if err := store.InsertTx(ns, txRec, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	checkStore()
+}
+
+// TestInsertMempoolTxAfterSpentOutput ensures that transactions that were
+// both confirmed and spent cannot be added as unconfirmed.
+func TestInsertMempoolTxAfterSpentOutput(t *testing.T) {
+	t.Parallel()
+
+	store, db, teardown, err := testStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer teardown()
+
+	// First we add a confirmed transaction to the wallet.
+	b100 := BlockMeta{
+		Block: Block{Height: 100},
+		Time:  time.Now(),
+	}
+	cb := newCoinBase(1e8)
+	cbRec, err := NewTxRecordFromMsgTx(cb, b100.Time)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		if err := store.InsertTx(ns, cbRec, &b100); err != nil {
+			t.Fatal(err)
+		}
+		err := store.AddCredit(ns, cbRec, &b100, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// Then create a transaction that spends the previous tx output.
+	b101 := BlockMeta{
+		Block: Block{Height: 101},
+		Time:  time.Now(),
+	}
+	amt := int64(1e7)
+	spend := spendOutput(&cbRec.Hash, 0, amt)
+	spendRec, err := NewTxRecordFromMsgTx(spend, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		// We add the spending tx to the wallet as confirmed.
+		err := store.InsertTx(ns, spendRec, &b101)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = store.AddCredit(ns, spendRec, &b101, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// We now adding the original transaction as mempool to simulate
+		// a real case where trying to broadcast a tx after it has been
+		// confirmed and spent.
+		if err := store.InsertTx(ns, cbRec, nil); err != nil {
+			t.Fatal(err)
+		}
+		err = store.AddCredit(ns, cbRec, nil, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// now we check that there no unminedCredit exists for the original tx.
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		k := canonicalOutPoint(&cbRec.Hash, 0)
+		if existsRawUnminedCredit(ns, k) != nil {
+			t.Fatalf("expected output to not exist " +
+				"in unmined credit bucket")
+		}
+	})
+}
+
 // TestOutputsAfterRemoveDoubleSpend ensures that when we remove a transaction
 // that double spends an existing output within the wallet, it doesn't remove
 // any other spending transactions of the same output.
@@ -2054,6 +2192,74 @@ func TestAddDuplicateCreditAfterConfirm(t *testing.T) {
 		if !minedTxs[0].Hash.IsEqual(&spendTxRec.Hash) {
 			t.Fatalf("expected tx hash %v, got %v", spendTxRec.Hash,
 				minedTxs[0].Hash)
+		}
+	})
+}
+
+// TestInsertMempoolTxAndConfirm ensures that there aren't any lingering
+// unconfirmed records for a transaction that existed within the store as
+// unconfirmed before becoming confirmed.
+func TestInsertMempoolTxAndConfirm(t *testing.T) {
+	t.Parallel()
+
+	store, db, teardown, err := testStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer teardown()
+
+	// Create a transaction which we'll insert into the store as
+	// unconfirmed.
+	tx := newCoinBase(1e8)
+	txRec, err := NewTxRecordFromMsgTx(tx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		if err := store.InsertTx(ns, txRec, nil); err != nil {
+			t.Fatal(err)
+		}
+		err := store.AddCredit(ns, txRec, nil, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// Then, proceed to confirm it.
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		block := &BlockMeta{
+			Block: Block{Height: 1337},
+			Time:  time.Now(),
+		}
+		if err := store.InsertTx(ns, txRec, block); err != nil {
+			t.Fatal(err)
+		}
+		err := store.AddCredit(ns, txRec, block, 0, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// We should not see any lingering unconfirmed records for it once it's
+	// been confirmed.
+	commitDBTx(t, store, db, func(ns walletdb.ReadWriteBucket) {
+		for _, input := range tx.TxIn {
+			prevOut := input.PreviousOutPoint
+			k := canonicalOutPoint(&prevOut.Hash, prevOut.Index)
+			if existsRawUnminedInput(ns, k) != nil {
+				t.Fatalf("found transaction input %v as "+
+					"unconfirmed", prevOut)
+			}
+		}
+		if existsRawUnmined(ns, txRec.Hash[:]) != nil {
+			t.Fatal("found transaction as unconfirmed")
+		}
+		for i := range tx.TxOut {
+			k := canonicalOutPoint(&txRec.Hash, uint32(i))
+			if existsRawUnminedCredit(ns, k) != nil {
+				t.Fatalf("found transaction output %v as "+
+					"unconfirmed", i)
+			}
 		}
 	})
 }
