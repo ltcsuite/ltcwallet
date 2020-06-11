@@ -1,4 +1,4 @@
-module github.com/btcsuite/btcwallet/walletdb
+module github.com/ltcsuite/ltcwallet/walletdb
 
 go 1.12
 
@@ -7,6 +7,5 @@ require (
 	github.com/coreos/bbolt v1.3.3
 	github.com/davecgh/go-spew v1.1.1
 	go.etcd.io/bbolt v1.3.3 // indirect
-	golang.org/x/sync v0.0.0-20190911185100-cd5d95a43a6e
 	golang.org/x/sys v0.0.0-20190904154756-749cb33beabd // indirect
 )

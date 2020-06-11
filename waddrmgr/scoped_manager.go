@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/hdkeychain"
-	"github.com/btcsuite/btcwallet/internal/zero"
-	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcwallet/internal/zero"
+	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
 // DerivationPath represents a derivation path from a particular key manager's
@@ -582,7 +582,7 @@ func (s *ScopedKeyManager) rowInterfaceToManaged(ns walletdb.ReadBucket,
 //
 // This function MUST be called with the manager lock held for writes.
 func (s *ScopedKeyManager) loadAndCacheAddress(ns walletdb.ReadBucket,
-	address btcutil.Address) (ManagedAddress, error) {
+	address ltcutil.Address) (ManagedAddress, error) {
 
 	// Attempt to load the raw address information from the database.
 	rowInterface, err := fetchAddress(ns, &s.scope, address.ScriptAddress())
@@ -630,13 +630,13 @@ func (s *ScopedKeyManager) existsAddress(ns walletdb.ReadBucket, addressID []byt
 // pay-to-pubkey-hash addresses and the script associated with
 // pay-to-script-hash addresses.
 func (s *ScopedKeyManager) Address(ns walletdb.ReadBucket,
-	address btcutil.Address) (ManagedAddress, error) {
+	address ltcutil.Address) (ManagedAddress, error) {
 
 	// ScriptAddress will only return a script hash if we're accessing an
 	// address that is either PKH or SH. In the event we're passed a PK
 	// address, convert the PK to PKH address so that we can access it from
 	// the addrs map and database.
-	if pka, ok := address.(*btcutil.AddressPubKey); ok {
+	if pka, ok := address.(*ltcutil.AddressPubKey); ok {
 		address = pka.AddressPubKeyHash()
 	}
 
@@ -660,7 +660,7 @@ func (s *ScopedKeyManager) Address(ns walletdb.ReadBucket,
 
 // AddrAccount returns the account to which the given address belongs.
 func (s *ScopedKeyManager) AddrAccount(ns walletdb.ReadBucket,
-	address btcutil.Address) (uint32, error) {
+	address ltcutil.Address) (uint32, error) {
 
 	account, err := fetchAddrAccount(ns, &s.scope, address.ScriptAddress())
 	if err != nil {
@@ -1494,7 +1494,7 @@ func (s *ScopedKeyManager) RenameAccount(ns walletdb.ReadWriteBucket,
 // It will also return an error if the address already exists.  Any other
 // errors returned are generally unexpected.
 func (s *ScopedKeyManager) ImportPrivateKey(ns walletdb.ReadWriteBucket,
-	wif *btcutil.WIF, bs *BlockStamp) (ManagedPubKeyAddress, error) {
+	wif *ltcutil.WIF, bs *BlockStamp) (ManagedPubKeyAddress, error) {
 
 	// Ensure the address is intended for network the address manager is
 	// associated with.
@@ -1515,7 +1515,7 @@ func (s *ScopedKeyManager) ImportPrivateKey(ns walletdb.ReadWriteBucket,
 
 	// Prevent duplicates.
 	serializedPubKey := wif.SerializePubKey()
-	pubKeyHash := btcutil.Hash160(serializedPubKey)
+	pubKeyHash := ltcutil.Hash160(serializedPubKey)
 	alreadyExists := s.existsAddress(ns, pubKeyHash)
 	if alreadyExists {
 		str := fmt.Sprintf("address for public key %x already exists",
@@ -1632,7 +1632,7 @@ func (s *ScopedKeyManager) ImportScript(ns walletdb.ReadWriteBucket,
 	}
 
 	// Prevent duplicates.
-	scriptHash := btcutil.Hash160(script)
+	scriptHash := ltcutil.Hash160(script)
 	alreadyExists := s.existsAddress(ns, scriptHash)
 	if alreadyExists {
 		str := fmt.Sprintf("address for script hash %x already exists",
@@ -1744,7 +1744,7 @@ func (s *ScopedKeyManager) fetchUsed(ns walletdb.ReadBucket,
 
 // MarkUsed updates the used flag for the provided address.
 func (s *ScopedKeyManager) MarkUsed(ns walletdb.ReadWriteBucket,
-	address btcutil.Address) error {
+	address ltcutil.Address) error {
 
 	addressID := address.ScriptAddress()
 	err := markAddressUsed(ns, &s.scope, addressID)
@@ -1823,7 +1823,7 @@ func (s *ScopedKeyManager) ForEachActiveAccountAddress(ns walletdb.ReadBucket, a
 // ForEachActiveAddress calls the given function with each active address
 // stored in the manager, breaking early on error.
 func (s *ScopedKeyManager) ForEachActiveAddress(ns walletdb.ReadBucket,
-	fn func(addr btcutil.Address) error) error {
+	fn func(addr ltcutil.Address) error) error {
 
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -1847,7 +1847,7 @@ func (s *ScopedKeyManager) ForEachActiveAddress(ns walletdb.ReadBucket,
 // ForEachInternalActiveAddress invokes the given closure on each _internal_
 // active address belonging to the scoped key manager, breaking early on error.
 func (s *ScopedKeyManager) ForEachInternalActiveAddress(ns walletdb.ReadBucket,
-	fn func(addr btcutil.Address) error) error {
+	fn func(addr ltcutil.Address) error) error {
 
 	s.mtx.Lock()
 	defer s.mtx.Unlock()

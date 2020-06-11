@@ -9,51 +9,51 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/lightninglabs/gozmq"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 const (
 	// rawBlockZMQCommand is the command used to receive raw block
-	// notifications from bitcoind through ZMQ.
+	// notifications from litecoind through ZMQ.
 	rawBlockZMQCommand = "rawblock"
 
 	// rawTxZMQCommand is the command used to receive raw transaction
-	// notifications from bitcoind through ZMQ.
+	// notifications from litecoind through ZMQ.
 	rawTxZMQCommand = "rawtx"
 
 	// maxRawBlockSize is the maximum size in bytes for a raw block received
-	// from bitcoind through ZMQ.
+	// from litecoind through ZMQ.
 	maxRawBlockSize = 4e6
 
 	// maxRawTxSize is the maximum size in bytes for a raw transaction
-	// received from bitcoind through ZMQ.
+	// received from litecoind through ZMQ.
 	maxRawTxSize = maxRawBlockSize
 
 	// seqNumLen is the length of the sequence number of a message sent from
-	// bitcoind through ZMQ.
+	// litecoind through ZMQ.
 	seqNumLen = 4
 )
 
-// BitcoindConn represents a persistent client connection to a bitcoind node
+// LitecoindConn represents a persistent client connection to a litecoind node
 // that listens for events read from a ZMQ connection.
 type BitcoindConn struct {
 	started int32 // To be used atomically.
 	stopped int32 // To be used atomically.
 
 	// rescanClientCounter is an atomic counter that assigns a unique ID to
-	// each new bitcoind rescan client using the current bitcoind
+	// each new litecoind rescan client using the current litecoind
 	// connection.
 	rescanClientCounter uint64
 
-	// chainParams identifies the current network the bitcoind node is
+	// chainParams identifies the current network the litecoind node is
 	// running on.
 	chainParams *chaincfg.Params
 
-	// client is the RPC client to the bitcoind node.
+	// client is the RPC client to the litecoind node.
 	client *rpcclient.Client
 
 	// zmqBlockConn is the ZMQ connection we'll use to read raw block
@@ -64,7 +64,7 @@ type BitcoindConn struct {
 	// events.
 	zmqTxConn *gozmq.Conn
 
-	// rescanClients is the set of active bitcoind rescan clients to which
+	// rescanClients is the set of active litecoind rescan clients to which
 	// ZMQ event notfications will be sent to.
 	rescanClientsMtx sync.Mutex
 	rescanClients    map[uint64]*BitcoindClient
@@ -129,7 +129,7 @@ func NewBitcoindConn(chainParams *chaincfg.Params,
 	return conn, nil
 }
 
-// Start attempts to establish a RPC and ZMQ connection to a bitcoind node. If
+// Start attempts to establish a RPC and ZMQ connection to a litecoind node. If
 // successful, a goroutine is spawned to read events from the ZMQ connection.
 // It's possible for this function to fail due to a limited number of connection
 // attempts. This is done to prevent waiting forever on the connection to be
@@ -156,7 +156,7 @@ func (c *BitcoindConn) Start() error {
 	return nil
 }
 
-// Stop terminates the RPC and ZMQ connection to a bitcoind node and removes any
+// Stop terminates the RPC and ZMQ connection to a litecoind node and removes any
 // active rescan clients.
 func (c *BitcoindConn) Stop() {
 	if !atomic.CompareAndSwapInt32(&c.stopped, 0, 1) {
@@ -183,15 +183,15 @@ func (c *BitcoindConn) Stop() {
 func (c *BitcoindConn) blockEventHandler() {
 	defer c.wg.Done()
 
-	log.Info("Started listening for bitcoind block notifications via ZMQ "+
+	log.Info("Started listening for litecoind block notifications via ZMQ "+
 		"on", c.zmqBlockConn.RemoteAddr())
 
 	// Set up the buffers we expect our messages to consume. ZMQ
-	// messages from bitcoind include three parts: the command, the
+	// messages from litecoind include three parts: the command, the
 	// data, and the sequence number.
 	//
 	// We'll allocate a fixed data slice that we'll reuse when reading
-	// blocks from bitcoind through ZMQ. There's no need to recycle this
+	// blocks from litecoind through ZMQ. There's no need to recycle this
 	// slice (zero out) after using it, as further reads will overwrite the
 	// slice and we'll only be deserializing the bytes needed.
 	var (
@@ -264,7 +264,7 @@ func (c *BitcoindConn) blockEventHandler() {
 			c.rescanClientsMtx.Unlock()
 		default:
 			// It's possible that the message wasn't fully read if
-			// bitcoind shuts down, which will produce an unreadable
+			// litecoind shuts down, which will produce an unreadable
 			// event type. To prevent from logging it, we'll make
 			// sure it conforms to the ASCII standard.
 			if eventType == "" || !isASCII(eventType) {
@@ -285,15 +285,15 @@ func (c *BitcoindConn) blockEventHandler() {
 func (c *BitcoindConn) txEventHandler() {
 	defer c.wg.Done()
 
-	log.Info("Started listening for bitcoind transaction notifications "+
+	log.Info("Started listening for litecoind transaction notifications "+
 		"via ZMQ on", c.zmqTxConn.RemoteAddr())
 
 	// Set up the buffers we expect our messages to consume. ZMQ
-	// messages from bitcoind include three parts: the command, the
+	// messages from litecoind include three parts: the command, the
 	// data, and the sequence number.
 	//
 	// We'll allocate a fixed data slice that we'll reuse when reading
-	// transactions from bitcoind through ZMQ. There's no need to recycle
+	// transactions from litecoind through ZMQ. There's no need to recycle
 	// this slice (zero out) after using it, as further reads will overwrite
 	// the slice and we'll only be deserializing the bytes needed.
 	var (
@@ -366,7 +366,7 @@ func (c *BitcoindConn) txEventHandler() {
 			c.rescanClientsMtx.Unlock()
 		default:
 			// It's possible that the message wasn't fully read if
-			// bitcoind shuts down, which will produce an unreadable
+			// litecoind shuts down, which will produce an unreadable
 			// event type. To prevent from logging it, we'll make
 			// sure it conforms to the ASCII standard.
 			if eventType == "" || !isASCII(eventType) {
@@ -379,7 +379,7 @@ func (c *BitcoindConn) txEventHandler() {
 	}
 }
 
-// getCurrentNet returns the network on which the bitcoind node is running.
+// getCurrentNet returns the network on which the litecoind node is running.
 func (c *BitcoindConn) getCurrentNet() (wire.BitcoinNet, error) {
 	hash, err := c.client.GetBlockHash(0)
 	if err != nil {
@@ -387,8 +387,8 @@ func (c *BitcoindConn) getCurrentNet() (wire.BitcoinNet, error) {
 	}
 
 	switch *hash {
-	case *chaincfg.TestNet3Params.GenesisHash:
-		return chaincfg.TestNet3Params.Net, nil
+	case *chaincfg.TestNet4Params.GenesisHash:
+		return chaincfg.TestNet4Params.Net, nil
 	case *chaincfg.RegressionNetParams.GenesisHash:
 		return chaincfg.RegressionNetParams.Net, nil
 	case *chaincfg.MainNetParams.GenesisHash:
@@ -398,7 +398,7 @@ func (c *BitcoindConn) getCurrentNet() (wire.BitcoinNet, error) {
 	}
 }
 
-// NewBitcoindClient returns a bitcoind client using the current bitcoind
+// NewBitcoindClient returns a litecoind client using the current litecoind
 // connection. This allows us to share the same connection using multiple
 // clients.
 func (c *BitcoindConn) NewBitcoindClient() *BitcoindClient {

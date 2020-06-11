@@ -50,8 +50,8 @@ var helpDescsEnUS = map[string]string{
 	"getbalance-account":     "DEPRECATED -- The account name to query the balance for, or \"*\" to consider all accounts (default=\"*\")",
 	"getbalance--condition0": "account != \"*\"",
 	"getbalance--condition1": "account = \"*\"",
-	"getbalance--result0":    "The balance of 'account' valued in bitcoin",
-	"getbalance--result1":    "The balance of all accounts valued in bitcoin",
+	"getbalance--result0":    "The balance of 'account' valued in litecoin",
+	"getbalance--result1":    "The balance of all accounts valued in litecoin",
 
 	// GetBestBlockHashCmd help.
 	"getbestblockhash--synopsis": "Returns the hash of the newest block in the best chain that wallet has finished syncing with.",
@@ -96,13 +96,13 @@ var helpDescsEnUS = map[string]string{
 	"getreceivedbyaccount--synopsis": "DEPRECATED -- Returns the total amount received by addresses of some account, including spent outputs.",
 	"getreceivedbyaccount-account":   "Account name to query total received amount for",
 	"getreceivedbyaccount-minconf":   "Minimum number of block confirmations required before an output's value is included in the total",
-	"getreceivedbyaccount--result0":  "The total received amount valued in bitcoin",
+	"getreceivedbyaccount--result0":  "The total received amount valued in litecoin",
 
 	// GetReceivedByAddressCmd help.
 	"getreceivedbyaddress--synopsis": "Returns the total amount received by a single address, including spent outputs.",
 	"getreceivedbyaddress-address":   "Payment address which received outputs to include in total",
 	"getreceivedbyaddress-minconf":   "Minimum number of block confirmations required before an output's value is included in the total",
-	"getreceivedbyaddress--result0":  "The total received amount valued in bitcoin",
+	"getreceivedbyaddress--result0":  "The total received amount valued in litecoin",
 
 	// GetTransactionCmd help.
 	"gettransaction--synopsis":        "Returns a JSON object with details regarding a transaction relevant to this wallet.",
@@ -118,7 +118,7 @@ var helpDescsEnUS = map[string]string{
 	"help--result1":    "Help for specified command",
 
 	// GetTransactionResult help.
-	"gettransactionresult-amount":          "The total amount this transaction credits to the wallet, valued in bitcoin",
+	"gettransactionresult-amount":          "The total amount this transaction credits to the wallet, valued in litecoin",
 	"gettransactionresult-fee":             "The total input value minus the total output value, or 0 if 'txid' is not a sent transaction",
 	"gettransactionresult-confirmations":   "The number of block confirmations of the transaction",
 	"gettransactionresult-blockhash":       "The hash of the block this transaction is mined in, or the empty string if unmined",
@@ -153,9 +153,9 @@ var helpDescsEnUS = map[string]string{
 	// ListAccountsCmd help.
 	"listaccounts--synopsis":       "DEPRECATED -- Returns a JSON object of all accounts and their balances.",
 	"listaccounts-minconf":         "Minimum number of block confirmations required before an unspent output's value is included in the balance",
-	"listaccounts--result0--desc":  "JSON object with account names as keys and bitcoin amounts as values",
+	"listaccounts--result0--desc":  "JSON object with account names as keys and litecoin amounts as values",
 	"listaccounts--result0--key":   "The account name",
-	"listaccounts--result0--value": "The account balance valued in bitcoin",
+	"listaccounts--result0--value": "The account balance valued in litecoin",
 
 	// ListLockUnspentCmd help.
 	"listlockunspent--synopsis": "Returns a JSON array of outpoints marked as locked (with lockunspent) for this wallet session.",
@@ -172,7 +172,7 @@ var helpDescsEnUS = map[string]string{
 
 	// ListReceivedByAccountResult help.
 	"listreceivedbyaccountresult-account":       "The name of the account",
-	"listreceivedbyaccountresult-amount":        "Total amount received by payment addresses of the account valued in bitcoin",
+	"listreceivedbyaccountresult-amount":        "Total amount received by payment addresses of the account valued in litecoin",
 	"listreceivedbyaccountresult-confirmations": "Number of block confirmations of the most recent transaction relevant to the account",
 
 	// ListReceivedByAddressCmd help.
@@ -184,7 +184,7 @@ var helpDescsEnUS = map[string]string{
 	// ListReceivedByAddressResult help.
 	"listreceivedbyaddressresult-account":           "DEPRECATED -- Unset",
 	"listreceivedbyaddressresult-address":           "The payment address",
-	"listreceivedbyaddressresult-amount":            "Total amount received by the payment address valued in bitcoin",
+	"listreceivedbyaddressresult-amount":            "Total amount received by the payment address valued in litecoin",
 	"listreceivedbyaddressresult-confirmations":     "Number of block confirmations of the most recent transaction relevant to the address",
 	"listreceivedbyaddressresult-txids":             "Transaction hashes of all transactions involving this address",
 	"listreceivedbyaddressresult-involvesWatchonly": "Unset",
@@ -207,7 +207,7 @@ var helpDescsEnUS = map[string]string{
 	"listtransactionsresult-account":            "DEPRECATED -- Unset",
 	"listtransactionsresult-address":            "Payment address for a transaction output",
 	"listtransactionsresult-category":           `The kind of transaction: "send" for sent transactions, "immature" for immature coinbase outputs, "generate" for mature coinbase outputs, or "recv" for all other received outputs.  Note: A single output may be included multiple times under different categories`,
-	"listtransactionsresult-amount":             "The value of the transaction output valued in bitcoin",
+	"listtransactionsresult-amount":             "The value of the transaction output valued in litecoin",
 	"listtransactionsresult-fee":                "The total input value minus the total output value for sent transactions",
 	"listtransactionsresult-confirmations":      "The number of block confirmations of the transaction",
 	"listtransactionsresult-generated":          "Whether the transaction output is a coinbase output",
@@ -246,7 +246,7 @@ var helpDescsEnUS = map[string]string{
 	"listunspentresult-account":       "The account associated with the receiving payment address",
 	"listunspentresult-scriptPubKey":  "The output script encoded as a hexadecimal string",
 	"listunspentresult-redeemScript":  "Unset",
-	"listunspentresult-amount":        "The amount of the output valued in bitcoin",
+	"listunspentresult-amount":        "The amount of the output valued in litecoin",
 	"listunspentresult-confirmations": "The number of block confirmations of the transaction",
 	"listunspentresult-spendable":     "Whether the output is entirely controlled by wallet keys/scripts (false for partially controlled multisig outputs or outputs to watch-only addresses)",
 
@@ -264,7 +264,7 @@ var helpDescsEnUS = map[string]string{
 		"A change output is automatically included to send extra output value back to the original account.",
 	"sendfrom-fromaccount": "Account to pick unspent outputs from",
 	"sendfrom-toaddress":   "Address to pay",
-	"sendfrom-amount":      "Amount to send to the payment address valued in bitcoin",
+	"sendfrom-amount":      "Amount to send to the payment address valued in litecoin",
 	"sendfrom-minconf":     "Minimum number of block confirmations required before a transaction output is eligible to be spent",
 	"sendfrom-comment":     "Unused",
 	"sendfrom-commentto":   "Unused",
@@ -275,9 +275,9 @@ var helpDescsEnUS = map[string]string{
 		"A change output is automatically included to send extra output value back to the original account.",
 	"sendmany-fromaccount":    "DEPRECATED -- Account to pick unspent outputs from",
 	"sendmany-amounts":        "Pairs of payment addresses and the output amount to pay each",
-	"sendmany-amounts--desc":  "JSON object using payment addresses as keys and output amounts valued in bitcoin to send to each address",
+	"sendmany-amounts--desc":  "JSON object using payment addresses as keys and output amounts valued in litecoin to send to each address",
 	"sendmany-amounts--key":   "Address to pay",
-	"sendmany-amounts--value": "Amount to send to the payment address valued in bitcoin",
+	"sendmany-amounts--value": "Amount to send to the payment address valued in litecoin",
 	"sendmany-minconf":        "Minimum number of block confirmations required before a transaction output is eligible to be spent",
 	"sendmany-comment":        "Unused",
 	"sendmany--result0":       "The transaction hash of the sent transaction",
@@ -287,14 +287,14 @@ var helpDescsEnUS = map[string]string{
 		"Unlike sendfrom, outputs are always chosen from the default account.\n" +
 		"A change output is automatically included to send extra output value back to the original account.",
 	"sendtoaddress-address":   "Address to pay",
-	"sendtoaddress-amount":    "Amount to send to the payment address valued in bitcoin",
+	"sendtoaddress-amount":    "Amount to send to the payment address valued in litecoin",
 	"sendtoaddress-comment":   "Unused",
 	"sendtoaddress-commentto": "Unused",
 	"sendtoaddress--result0":  "The transaction hash of the sent transaction",
 
 	// SetTxFeeCmd help.
 	"settxfee--synopsis": "Modify the increment used each time more fee is required for an authored transaction.",
-	"settxfee-amount":    "The new fee increment valued in bitcoin",
+	"settxfee-amount":    "The new fee increment valued in litecoin",
 	"settxfee--result0":  "The boolean 'true'",
 
 	// SignMessageCmd help.
@@ -387,7 +387,7 @@ var helpDescsEnUS = map[string]string{
 	// GetUnconfirmedBalanceCmd help.
 	"getunconfirmedbalance--synopsis": "Calculates the unspent output value of all unmined transaction outputs for an account.",
 	"getunconfirmedbalance-account":   "The account to query the unconfirmed balance for (default=\"default\")",
-	"getunconfirmedbalance--result0":  "Total amount of all unmined unspent outputs of the account valued in bitcoin.",
+	"getunconfirmedbalance--result0":  "Total amount of all unmined unspent outputs of the account valued in litecoin.",
 
 	// ListAddressTransactionsCmd help.
 	"listaddresstransactions--synopsis": "Returns a JSON array of objects containing verbose details for wallet transactions pertaining some addresses.",

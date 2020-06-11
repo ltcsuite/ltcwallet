@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/hdkeychain"
-	"github.com/btcsuite/btcwallet/internal/zero"
-	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcwallet/internal/zero"
+	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
 // AddressType represents the various address types waddrmgr is currently able
@@ -57,8 +57,8 @@ type ManagedAddress interface {
 	// Account returns the account the address is associated with.
 	Account() uint32
 
-	// Address returns a btcutil.Address for the backing address.
-	Address() btcutil.Address
+	// Address returns a ltcutil.Address for the backing address.
+	Address() ltcutil.Address
 
 	// AddrHash returns the key or script hash related to the address
 	AddrHash() []byte
@@ -102,7 +102,7 @@ type ManagedPubKeyAddress interface {
 
 	// ExportPrivKey returns the private key associated with the address
 	// serialized as Wallet Import Format (WIF).
-	ExportPrivKey() (*btcutil.WIF, error)
+	ExportPrivKey() (*ltcutil.WIF, error)
 
 	// DerivationInfo contains the information required to derive the key
 	// that backs the address via traditional methods from the HD root. For
@@ -126,7 +126,7 @@ type ManagedScriptAddress interface {
 type managedAddress struct {
 	manager          *ScopedKeyManager
 	derivationPath   DerivationPath
-	address          btcutil.Address
+	address          ltcutil.Address
 	imported         bool
 	internal         bool
 	compressed       bool
@@ -192,11 +192,11 @@ func (a *managedAddress) AddrType() AddressType {
 	return a.addrType
 }
 
-// Address returns the btcutil.Address which represents the managed address.
+// Address returns the ltcutil.Address which represents the managed address.
 // This will be a pay-to-pubkey-hash address.
 //
 // This is part of the ManagedAddress interface implementation.
-func (a *managedAddress) Address() btcutil.Address {
+func (a *managedAddress) Address() ltcutil.Address {
 	return a.address
 }
 
@@ -207,11 +207,11 @@ func (a *managedAddress) AddrHash() []byte {
 	var hash []byte
 
 	switch n := a.address.(type) {
-	case *btcutil.AddressPubKeyHash:
+	case *ltcutil.AddressPubKeyHash:
 		hash = n.Hash160()[:]
-	case *btcutil.AddressScriptHash:
+	case *ltcutil.AddressScriptHash:
 		hash = n.Hash160()[:]
-	case *btcutil.AddressWitnessPubKeyHash:
+	case *ltcutil.AddressWitnessPubKeyHash:
 		hash = n.Hash160()[:]
 	}
 
@@ -307,13 +307,13 @@ func (a *managedAddress) PrivKey() (*btcec.PrivateKey, error) {
 // Import Format (WIF).
 //
 // This is part of the ManagedPubKeyAddress interface implementation.
-func (a *managedAddress) ExportPrivKey() (*btcutil.WIF, error) {
+func (a *managedAddress) ExportPrivKey() (*ltcutil.WIF, error) {
 	pk, err := a.PrivKey()
 	if err != nil {
 		return nil, err
 	}
 
-	return btcutil.NewWIF(pk, a.manager.rootManager.chainParams, a.compressed)
+	return ltcutil.NewWIF(pk, a.manager.rootManager.chainParams, a.compressed)
 }
 
 // Derivationinfo contains the information required to derive the key that
@@ -347,12 +347,12 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 	// Create a pay-to-pubkey-hash address from the public key.
 	var pubKeyHash []byte
 	if compressed {
-		pubKeyHash = btcutil.Hash160(pubKey.SerializeCompressed())
+		pubKeyHash = ltcutil.Hash160(pubKey.SerializeCompressed())
 	} else {
-		pubKeyHash = btcutil.Hash160(pubKey.SerializeUncompressed())
+		pubKeyHash = ltcutil.Hash160(pubKey.SerializeUncompressed())
 	}
 
-	var address btcutil.Address
+	var address ltcutil.Address
 	var err error
 
 	switch addrType {
@@ -364,7 +364,7 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 		// and malleability fixes.
 
 		// First, we'll generate a normal p2wkh address from the pubkey hash.
-		witAddr, err := btcutil.NewAddressWitnessPubKeyHash(
+		witAddr, err := ltcutil.NewAddressWitnessPubKeyHash(
 			pubKeyHash, m.rootManager.chainParams,
 		)
 		if err != nil {
@@ -382,7 +382,7 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 		// to a p2sh address. In order to spend, we first use the
 		// witnessProgram as the sigScript, then present the proper
 		// <sig, pubkey> pair as the witness.
-		address, err = btcutil.NewAddressScriptHash(
+		address, err = ltcutil.NewAddressScriptHash(
 			witnessProgram, m.rootManager.chainParams,
 		)
 		if err != nil {
@@ -390,7 +390,7 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 		}
 
 	case PubKeyHash:
-		address, err = btcutil.NewAddressPubKeyHash(
+		address, err = ltcutil.NewAddressPubKeyHash(
 			pubKeyHash, m.rootManager.chainParams,
 		)
 		if err != nil {
@@ -398,7 +398,7 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 		}
 
 	case WitnessPubKey:
-		address, err = btcutil.NewAddressWitnessPubKeyHash(
+		address, err = ltcutil.NewAddressWitnessPubKeyHash(
 			pubKeyHash, m.rootManager.chainParams,
 		)
 		if err != nil {
@@ -500,7 +500,7 @@ func newManagedAddressFromExtKey(s *ScopedKeyManager,
 type scriptAddress struct {
 	manager         *ScopedKeyManager
 	account         uint32
-	address         *btcutil.AddressScriptHash
+	address         *ltcutil.AddressScriptHash
 	scriptEncrypted []byte
 	scriptCT        []byte
 	scriptMutex     sync.Mutex
@@ -560,11 +560,11 @@ func (a *scriptAddress) AddrType() AddressType {
 	return Script
 }
 
-// Address returns the btcutil.Address which represents the managed address.
+// Address returns the ltcutil.Address which represents the managed address.
 // This will be a pay-to-script-hash address.
 //
 // This is part of the ManagedAddress interface implementation.
-func (a *scriptAddress) Address() btcutil.Address {
+func (a *scriptAddress) Address() ltcutil.Address {
 	return a.address
 }
 
@@ -632,7 +632,7 @@ func (a *scriptAddress) Script() ([]byte, error) {
 func newScriptAddress(m *ScopedKeyManager, account uint32, scriptHash,
 	scriptEncrypted []byte) (*scriptAddress, error) {
 
-	address, err := btcutil.NewAddressScriptHashFromHash(
+	address, err := ltcutil.NewAddressScriptHashFromHash(
 		scriptHash, m.rootManager.chainParams,
 	)
 	if err != nil {
