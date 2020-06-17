@@ -9,25 +9,17 @@ require (
 	github.com/jrick/logrotate v1.0.0
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf
 	github.com/lightningnetwork/lnd/queue v1.0.4 // indirect
-	github.com/ltcsuite/ltcd v0.20.1-beta
+	github.com/ltcsuite/ltcd v0.20.1-beta.0.20200617222819-81094527da29
 	github.com/ltcsuite/ltclog v0.0.0-20160817181405-73889fb79bd6
-	github.com/ltcsuite/ltcutil v1.0.2
+	github.com/ltcsuite/ltcutil v1.0.2-beta
 	github.com/ltcsuite/ltcwallet/wallet/txauthor v1.0.0
 	github.com/ltcsuite/ltcwallet/wallet/txrules v1.0.0
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.1
-	github.com/ltcsuite/ltcwallet/wtxmgr v1.0.0
+	github.com/ltcsuite/ltcwallet/wtxmgr v1.1.0
 	github.com/ltcsuite/neutrino v0.11.0
 	golang.org/x/crypto v0.0.0-20200604202706-70a84ac30bf9
 	golang.org/x/net v0.0.0-20190404232315-eb5bcb51f2a3
 	google.golang.org/grpc v1.18.0
 )
-
-replace github.com/ltcsuite/ltcd => ../ltcd
-
-replace github.com/ltcsuite/ltcutil => ../ltcutil
-
-replace github.com/ltcsuite/ltcwallet/walletdb => ./walletdb
-
-replace github.com/ltcsuite/ltcwallet/wtxmgr => ./wtxmgr
 
 go 1.13

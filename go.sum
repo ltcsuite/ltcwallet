@@ -77,7 +77,13 @@ github.com/ltcsuite/lnd/queue v1.0.3/go.mod h1:L0MMGRrsJFPHhTInek8YgW2v7NyB6pXrA
 github.com/ltcsuite/lnd/ticker v1.0.1/go.mod h1:WZKpekfDVAVv7Gsrr0GAWC/U1XURfGesFg9sQYJbeL4=
 github.com/ltcsuite/ltcd v0.20.1-beta h1:ka9ZwUG7oUPppl+7ptuh5VDxGD7TWEJXu/IOOOz1yfY=
 github.com/ltcsuite/ltcd v0.20.1-beta/go.mod h1:ZFQaYdYULIuTQiWqs7AUiHD2XhDFeeHW1IH+UYMdABU=
+github.com/ltcsuite/ltcd v0.20.1-beta.0.20200617222819-81094527da29 h1:k7X+QeOhE8u/DttC5eUAqaYhhEEd74DrZYxrJEb4D1k=
+github.com/ltcsuite/ltcd v0.20.1-beta.0.20200617222819-81094527da29/go.mod h1:k4GH6YHNIenJnZY4zAETuiyiYdWKd00kIc6M2lXt/4g=
 github.com/ltcsuite/ltclog v0.0.0-20160817181405-73889fb79bd6/go.mod h1:0vobaAoyUrwaVFd11+PtAx4afDrzzyFopOaky5ytLBw=
+github.com/ltcsuite/ltcutil v0.0.0-20190425235716-9e5f4b9a998d/go.mod h1:8Vg/LTOO0KYa/vlHWJ6XZAevPQThGH5sufO0Hrou/lA=
+github.com/ltcsuite/ltcutil v0.0.0-20191227053721-6bec450ea6ad/go.mod h1:8Vg/LTOO0KYa/vlHWJ6XZAevPQThGH5sufO0Hrou/lA=
+github.com/ltcsuite/ltcutil v1.0.2-beta h1:IS86frABIvbpw9ilpQ/zt8t30pFog6DD4tBcgbjdj8g=
+github.com/ltcsuite/ltcutil v1.0.2-beta/go.mod h1:G1JGpaqtMm0mPtheTryXnDd9a4KAFuGevdQirlJO1Nw=
 github.com/ltcsuite/ltcwallet v0.0.0-20190105125346-3fa612e326e5/go.mod h1:lLxtFelndCZougRANrysOgq+5aBCgBraH4/ovLb1fo0=
 github.com/ltcsuite/ltcwallet v0.11.1-beta/go.mod h1:NDOrqKG1Wo5f9WbKzEW0oQFRcFrA6znu+zFYgmFvyJE=
 github.com/ltcsuite/ltcwallet/wallet/txauthor v1.0.0 h1:V5iIFayENLKYw63swa3HsHEHvW8oKHzrVaqqhn48Xgc=
