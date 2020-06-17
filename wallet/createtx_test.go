@@ -6,16 +6,12 @@ package wallet
 
 import (
 	"bytes"
-	"io/ioutil"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
@@ -26,31 +22,8 @@ import (
 // request a dry run of the txToOutputs call. It also makes sure a subsequent
 // non-dry run call produces a similar transaction to the dry-run.
 func TestTxToOutputsDryRun(t *testing.T) {
-	// Set up a wallet.
-	dir, err := ioutil.TempDir("", "createtx_test")
-	if err != nil {
-		t.Fatalf("Failed to create db dir: %v", err)
-	}
-	defer os.RemoveAll(dir)
-
-	seed, err := hdkeychain.GenerateSeed(hdkeychain.MinSeedBytes)
-	if err != nil {
-		t.Fatalf("unable to create seed: %v", err)
-	}
-
-	pubPass := []byte("hello")
-	privPass := []byte("world")
-
-	loader := NewLoader(&chaincfg.TestNet3Params, dir, true, 250)
-	w, err := loader.CreateNewWallet(pubPass, privPass, seed, time.Now())
-	if err != nil {
-		t.Fatalf("unable to create wallet: %v", err)
-	}
-	chainClient := &mockChainClient{}
-	w.chainClient = chainClient
-	if err := w.Unlock(privPass, time.After(10*time.Minute)); err != nil {
-		t.Fatalf("unable to unlock wallet: %v", err)
-	}
+	w, cleanup := testWallet(t)
+	defer cleanup()
 
 	// Create an address we can use to send some coins to.
 	addr, err := w.CurrentAddress(0, waddrmgr.KeyScopeBIP0044)
