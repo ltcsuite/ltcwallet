@@ -91,7 +91,7 @@ $ cd $GOPATH/src/github.com/ltcsuite/ltcwallet
 $ GO111MODULE=on go install -v . ./cmd/...
 ```
 
-- btcwallet (and utilities) will now be installed in `$GOPATH/bin`. If you did
+- ltcwallet (and utilities) will now be installed in `$GOPATH/bin`. If you did
   not already add the bin directory to your system path during Go installation,
   we recommend you do so now.
 
