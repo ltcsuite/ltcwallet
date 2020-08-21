@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh/terminal"
 
+	"github.com/jessevdk/go-flags"
 	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/rpcclient"
@@ -22,7 +23,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/netparams"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
-	"github.com/jessevdk/go-flags"
 )
 
 var (

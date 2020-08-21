@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
+	flags "github.com/jessevdk/go-flags"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/internal/cfgutil"
 	"github.com/ltcsuite/ltcwallet/internal/legacy/keystore"
 	"github.com/ltcsuite/ltcwallet/netparams"
 	"github.com/ltcsuite/ltcwallet/wallet"
-	flags "github.com/jessevdk/go-flags"
 	"github.com/ltcsuite/neutrino"
 )
 

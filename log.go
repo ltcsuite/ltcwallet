@@ -10,14 +10,14 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/btcsuite/btclog"
+	"github.com/jrick/logrotate/rotator"
+	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/rpc/legacyrpc"
 	"github.com/ltcsuite/ltcwallet/rpc/rpcserver"
 	"github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
-	"github.com/jrick/logrotate/rotator"
 	"github.com/ltcsuite/neutrino"
 )
 
