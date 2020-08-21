@@ -26,7 +26,7 @@ func TestCreateWatchingOnly(t *testing.T) {
 
 	pubPass := []byte("hello")
 
-	loader := NewLoader(&chaincfg.TestNet3Params, dir, true, 250)
+	loader := NewLoader(&chaincfg.TestNet4Params, dir, true, 250)
 	_, err = loader.CreateNewWatchingOnlyWallet(pubPass, time.Now())
 	if err != nil {
 		t.Fatalf("unable to create wallet: %v", err)
