@@ -21,8 +21,8 @@ require (
 	github.com/ltcsuite/ltcwallet/wtxmgr v1.5.0
 	github.com/ltcsuite/neutrino v0.13.2
 	github.com/stretchr/testify v1.7.0
-	golang.org/x/crypto v0.0.0-20200820211705-5c72a883971a
-	golang.org/x/net v0.0.0-20200520004742-59133d7f0dd7
+	golang.org/x/crypto v0.0.0-20220214200702-86341886e292
+	golang.org/x/net v0.0.0-20211112202133-69e39bad7dc2
 	google.golang.org/genproto v0.0.0-20190201180003-4b09977fb922 // indirect
 	google.golang.org/grpc v1.18.0
 )
