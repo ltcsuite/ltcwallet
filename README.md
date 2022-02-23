@@ -3,7 +3,7 @@
 [![Build Status](https://travis-ci.org/ltcsuite/ltcwallet.png?branch=master)](https://travis-ci.org/ltcsuite/ltcwallet)
 [![Build status](https://ci.appveyor.com/api/projects/status/88nxvckdj8upqr36/branch/master?svg=true)](https://ci.appveyor.com/project/jrick/ltcwallet/branch/master)
 
-ltcwallet is a daemon handling bitcoin wallet functionality for a
+ltcwallet is a daemon handling litecoin wallet functionality for a
 single user. It acts as both an RPC client to ltcd and an RPC server
 for wallet clients and legacy RPC applications.
 
@@ -30,12 +30,12 @@ ltcwallet is not an SPV client and requires connecting to a local or
 remote ltcd instance for asynchronous blockchain queries and
 notifications over websockets. Full ltcd installation instructions
 can be found [here](https://github.com/ltcsuite/ltcd). An alternative
-SPV mode that is compatible with ltcd and Bitcoin Core is planned for
+SPV mode that is compatible with ltcd and Litecoin Core is planned for
 a future release.
 
 Wallet clients can use one of two RPC servers:
 
-1. A legacy JSON-RPC server mostly compatible with Bitcoin Core
+1. A legacy JSON-RPC server mostly compatible with Litecoin Core
 
    The JSON-RPC server exists to ease the migration of wallet applications
    from Core, but complete compatibility is not guaranteed. Some portions of
