@@ -7,8 +7,14 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg"
-	"github.com/ltcsuite/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	"github.com/ltcsuite/ltcwallet/walletdb"
 )
+
+// defaultDBTimeout specifies the timeout value when opening the wallet
+// database.
+var defaultDBTimeout = 10 * time.Second
 
 // testWallet creates a test wallet and unlocks it.
 func testWallet(t *testing.T) (*Wallet, func()) {
@@ -32,7 +38,9 @@ func testWallet(t *testing.T) (*Wallet, func()) {
 	pubPass := []byte("hello")
 	privPass := []byte("world")
 
-	loader := NewLoader(&chaincfg.TestNet4Params, dir, true, 250)
+	loader := NewLoader(
+		&chaincfg.TestNet4Params, dir, true, defaultDBTimeout, 250,
+	)
 	w, err := loader.CreateNewWallet(pubPass, privPass, seed, time.Now())
 	if err != nil {
 		t.Fatalf("unable to create wallet: %v", err)
@@ -41,6 +49,51 @@ func testWallet(t *testing.T) (*Wallet, func()) {
 	w.chainClient = chainClient
 	if err := w.Unlock(privPass, time.After(10*time.Minute)); err != nil {
 		t.Fatalf("unable to unlock wallet: %v", err)
+	}
+
+	return w, cleanup
+}
+
+// testWalletWatchingOnly creates a test watch only wallet and unlocks it.
+func testWalletWatchingOnly(t *testing.T) (*Wallet, func()) {
+	// Set up a wallet.
+	dir, err := ioutil.TempDir("", "test_wallet_watch_only")
+	if err != nil {
+		t.Fatalf("Failed to create db dir: %v", err)
+	}
+
+	cleanup := func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("could not cleanup test: %v", err)
+		}
+	}
+
+	pubPass := []byte("hello")
+	loader := NewLoader(
+		&chaincfg.TestNet4Params, dir, true, defaultDBTimeout, 250,
+	)
+	w, err := loader.CreateNewWatchingOnlyWallet(pubPass, time.Now())
+	if err != nil {
+		t.Fatalf("unable to create wallet: %v", err)
+	}
+	chainClient := &mockChainClient{}
+	w.chainClient = chainClient
+
+	err = walletdb.Update(w.Database(), func(tx walletdb.ReadWriteTx) error {
+		ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+		for scope, schema := range waddrmgr.ScopeAddrMap {
+			_, err := w.Manager.NewScopedKeyManager(
+				ns, scope, schema,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unable to create default scopes: %v", err)
 	}
 
 	return w, cleanup

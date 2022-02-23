@@ -7,6 +7,7 @@ package wtxmgr
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -16,8 +17,8 @@ import (
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 )
@@ -45,6 +46,10 @@ var (
 		Block: Block{Hash: *TstSignedTxBlockHash, Height: TstSpendingTxBlockHeight},
 		Time:  time.Unix(1389114091, 0),
 	}
+
+	// defaultDBTimeout specifies the timeout value when opening the wallet
+	// database.
+	defaultDBTimeout = 10 * time.Second
 )
 
 func testDB() (walletdb.DB, func(), error) {
@@ -52,7 +57,9 @@ func testDB() (walletdb.DB, func(), error) {
 	if err != nil {
 		return nil, func() {}, err
 	}
-	db, err := walletdb.Create("bdb", filepath.Join(tmpDir, "db"), true)
+	db, err := walletdb.Create(
+		"bdb", filepath.Join(tmpDir, "db"), true, defaultDBTimeout,
+	)
 	return db, func() { os.RemoveAll(tmpDir) }, err
 }
 
@@ -64,7 +71,9 @@ func testStore() (*Store, walletdb.DB, func(), error) {
 		return nil, nil, func() {}, err
 	}
 
-	db, err := walletdb.Create("bdb", filepath.Join(tmpDir, "db"), true)
+	db, err := walletdb.Create(
+		"bdb", filepath.Join(tmpDir, "db"), true, defaultDBTimeout,
+	)
 	if err != nil {
 		os.RemoveAll(tmpDir)
 		return nil, nil, nil, err
@@ -184,6 +193,13 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 					return nil, err
 				}
 
+				// Check that the duplicate transaction is found.
+				if exists, _ := s.InsertTxCheckIfExists(ns, rec, nil); !exists {
+					return nil, fmt.Errorf(
+						"duplicate transaction was not found as already recorded",
+					)
+				}
+
 				err = s.AddCredit(ns, rec, nil, 0, false)
 				return s, err
 			},
@@ -234,6 +250,13 @@ func TestInsertsCreditsDebitsRollbacks(t *testing.T) {
 				err = s.InsertTx(ns, rec, TstRecvTxBlockDetails)
 				if err != nil {
 					return nil, err
+				}
+
+				// Make sure the duplicate transaction is found.
+				if exists, _ := s.InsertTxCheckIfExists(ns, rec, TstRecvTxBlockDetails); !exists {
+					return nil, fmt.Errorf(
+						"duplicate transaction was not found as already recorded",
+					)
 				}
 
 				err = s.AddCredit(ns, rec, TstRecvTxBlockDetails, 0, false)
@@ -2276,11 +2299,11 @@ func TestTxLabel(t *testing.T) {
 	defer teardown()
 
 	// txid is the transaction hash we will use to write and get labels for.
-	txid := TstRecvTx.Hash()
+	txid := &chainhash.Hash{1}
 
 	// txidNotFound is distinct from txid, and will not have a label written
 	// to disk.
-	txidNotFound := TstSpendingTx.Hash()
+	txidNotFound := &chainhash.Hash{2}
 
 	// getBucket gets the top level bucket, and fails the test if it is
 	// not found.
@@ -2417,19 +2440,20 @@ func assertOutputLocksExist(t *testing.T, s *Store, ns walletdb.ReadBucket,
 
 	t.Helper()
 
-	var found []wire.OutPoint
-	forEachLockedOutput(ns, func(op wire.OutPoint, _ LockID, _ time.Time) {
-		found = append(found, op)
-	})
-	if len(found) != len(exp) {
+	outputs, err := s.ListLockedOutputs(ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(outputs) != len(exp) {
 		t.Fatalf("expected to find %v locked output(s), found %v",
-			len(exp), len(found))
+			len(exp), len(outputs))
 	}
 
 	for _, expOp := range exp {
 		exists := false
-		for _, foundOp := range found {
-			if expOp == foundOp {
+		for _, found := range outputs {
+			if expOp == found.Outpoint {
 				exists = true
 				break
 			}
@@ -2445,7 +2469,7 @@ func lock(t *testing.T, s *Store, ns walletdb.ReadWriteBucket,
 
 	t.Helper()
 
-	expiry, err := s.LockOutput(ns, id, op)
+	expiry, err := s.LockOutput(ns, id, op, 10*time.Minute)
 	if err != exp {
 		t.Fatalf("expected err %q, got %q", exp, err)
 	}
@@ -2771,6 +2795,16 @@ func TestOutputLocks(t *testing.T) {
 				// Let the output lock expired.
 				s.clock.(*clock.TestClock).SetTime(expiry)
 
+				// Lock should not longer be listed.
+				assertOutputLocksExist(t, s, ns)
+
+				// But the lock should still exist and active
+				// when time is turned back.
+				assertLocked(
+					t, ns, confirmedOutPoint, time.Time{},
+					true,
+				)
+
 				// Delete all expired locked outputs. We should
 				// no longer see any locked outputs.
 				err = s.DeleteExpiredLockedOutputs(ns)
@@ -2779,6 +2813,10 @@ func TestOutputLocks(t *testing.T) {
 						"locked outputs: %v", err)
 				}
 				assertOutputLocksExist(t, s, ns)
+				assertLocked(
+					t, ns, confirmedOutPoint, time.Time{},
+					false,
+				)
 			},
 		},
 	}

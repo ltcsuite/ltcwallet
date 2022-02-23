@@ -8,7 +8,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 var (
@@ -73,6 +73,7 @@ func TestLocateBirthdayBlock(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
+		testCase := testCase
 		success := t.Run(testCase.name, func(t *testing.T) {
 			chainConn := createMockChainConn(
 				chainParams.GenesisBlock, numBlocks, blockInterval,

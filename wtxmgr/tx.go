@@ -16,17 +16,14 @@ import (
 	"github.com/ltcsuite/ltcd/blockchain"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
 const (
 	// TxLabelLimit is the length limit we impose on transaction labels.
 	TxLabelLimit = 500
-
-	// DefaultLockDuration is the default duration used to lock outputs.
-	DefaultLockDuration = 10 * time.Minute
 )
 
 var (
@@ -58,6 +55,10 @@ var (
 	// ErrOutputUnlockNotAllowed is an error returned when an output unlock
 	// is attempted with a different ID than the one which locked it.
 	ErrOutputUnlockNotAllowed = errors.New("output unlock not alowed")
+
+	// ErrDuplicateTx is returned when attempting to record a mined or
+	// unmined transaction that is already recorded.
+	ErrDuplicateTx = errors.New("transaction already exists")
 )
 
 // Block contains the minimum amount of data to uniquely identify any block on
@@ -123,6 +124,14 @@ type TxRecord struct {
 	Hash         chainhash.Hash
 	Received     time.Time
 	SerializedTx []byte // Optional: may be nil
+}
+
+// LockedOutput is a type that contains an outpoint of an UTXO and its lock
+// lease information.
+type LockedOutput struct {
+	Outpoint   wire.OutPoint
+	LockID     LockID
+	Expiration time.Time
 }
 
 // NewTxRecord creates a new transaction record that may be inserted into the
@@ -350,11 +359,30 @@ func (s *Store) deleteUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 // InsertTx records a transaction as belonging to a wallet's transaction
 // history.  If block is nil, the transaction is considered unspent, and the
 // transaction's index must be unset.
-func (s *Store) InsertTx(ns walletdb.ReadWriteBucket, rec *TxRecord, block *BlockMeta) error {
+func (s *Store) InsertTx(ns walletdb.ReadWriteBucket, rec *TxRecord,
+	block *BlockMeta) error {
+	_, err := s.InsertTxCheckIfExists(ns, rec, block)
+	return err
+}
+
+// InsertTxCheckIfExists records a transaction as belonging to a wallet's
+// transaction history.  If block is nil, the transaction is considered unspent,
+// and the transaction's index must be unset. It will return true if the
+// transaction was already recorded prior to the call.
+func (s *Store) InsertTxCheckIfExists(ns walletdb.ReadWriteBucket,
+	rec *TxRecord, block *BlockMeta) (bool, error) {
+
+	var err error
 	if block == nil {
-		return s.insertMemPoolTx(ns, rec)
+		if err = s.insertMemPoolTx(ns, rec); err == ErrDuplicateTx {
+			return true, nil
+		}
+		return false, err
 	}
-	return s.insertMinedTx(ns, rec, block)
+	if err = s.insertMinedTx(ns, rec, block); err == ErrDuplicateTx {
+		return true, nil
+	}
+	return false, err
 }
 
 // RemoveUnminedTx attempts to remove an unmined transaction from the
@@ -381,7 +409,7 @@ func (s *Store) insertMinedTx(ns walletdb.ReadWriteBucket, rec *TxRecord,
 	// If a transaction record for this hash and block already exists, we
 	// can exit early.
 	if _, v := existsTxRecord(ns, &rec.Hash, &block.Block); v != nil {
-		return nil
+		return ErrDuplicateTx
 	}
 
 	// If a block record does not yet exist for any transactions from this
@@ -1154,7 +1182,7 @@ func isKnownOutput(ns walletdb.ReadWriteBucket, op wire.OutPoint) bool {
 // already been locked to a different ID, then ErrOutputAlreadyLocked is
 // returned.
 func (s *Store) LockOutput(ns walletdb.ReadWriteBucket, id LockID,
-	op wire.OutPoint) (time.Time, error) {
+	op wire.OutPoint, duration time.Duration) (time.Time, error) {
 
 	// Make sure the output is known.
 	if !isKnownOutput(ns, op) {
@@ -1167,7 +1195,7 @@ func (s *Store) LockOutput(ns walletdb.ReadWriteBucket, id LockID,
 		return time.Time{}, ErrOutputAlreadyLocked
 	}
 
-	expiry := s.clock.Now().Add(DefaultLockDuration)
+	expiry := s.clock.Now().Add(duration)
 	if err := lockOutput(ns, id, op, expiry); err != nil {
 		return time.Time{}, err
 	}
@@ -1225,4 +1253,32 @@ func (s *Store) DeleteExpiredLockedOutputs(ns walletdb.ReadWriteBucket) error {
 	}
 
 	return nil
+}
+
+// ListLockedOutputs returns a list of objects representing the currently locked
+// utxos.
+func (s *Store) ListLockedOutputs(ns walletdb.ReadBucket) ([]*LockedOutput,
+	error) {
+
+	var outputs []*LockedOutput
+	err := forEachLockedOutput(
+		ns, func(op wire.OutPoint, id LockID, expiration time.Time) {
+			// Skip expired leases. They will be cleaned up with the
+			// next call to DeleteExpiredLockedOutputs.
+			if !s.clock.Now().Before(expiration) {
+				return
+			}
+
+			outputs = append(outputs, &LockedOutput{
+				Outpoint:   op,
+				LockID:     id,
+				Expiration: expiration,
+			})
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return outputs, nil
 }

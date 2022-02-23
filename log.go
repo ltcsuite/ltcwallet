@@ -26,8 +26,8 @@ import (
 type logWriter struct{}
 
 func (logWriter) Write(p []byte) (n int, err error) {
-	os.Stdout.Write(p)
-	logRotatorPipe.Write(p)
+	_, _ = os.Stdout.Write(p)
+	_, _ = logRotatorPipe.Write(p)
 	return len(p), nil
 }
 
@@ -101,7 +101,7 @@ func initLogRotator(logFile string) {
 	}
 
 	pr, pw := io.Pipe()
-	go r.Run(pr)
+	go func() { _ = r.Run(pr) }()
 
 	logRotator = r
 	logRotatorPipe = pw
@@ -131,13 +131,4 @@ func setLogLevels(logLevel string) {
 	for subsystemID := range subsystemLoggers {
 		setLogLevel(subsystemID, logLevel)
 	}
-}
-
-// fatalf logs a message, flushes the logger, and finally exit the process with
-// a non-zero return code.
-func fatalf(format string, args ...interface{}) {
-	log.Errorf(format, args...)
-	os.Stdout.Sync()
-	logRotator.Close()
-	os.Exit(1)
 }

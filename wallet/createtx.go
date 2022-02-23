@@ -7,14 +7,16 @@ package wallet
 
 import (
 	"fmt"
+	"math/rand"
 	"sort"
 
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
+	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
 )
@@ -28,10 +30,6 @@ func (s byAmount) Less(i, j int) bool { return s[i].Amount < s[j].Amount }
 func (s byAmount) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 func makeInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
-	// Pick largest outputs first.  This is only done for compatibility with
-	// previous tx creation code, not because it's a good idea.
-	sort.Sort(sort.Reverse(byAmount(eligible)))
-
 	// Current inputs and their total value.  These are closed over by the
 	// returned input source and reused across multiple calls.
 	currentTotal := ltcutil.Amount(0)
@@ -97,30 +95,26 @@ func (s secretSource) GetScript(addr ltcutil.Address) ([]byte, error) {
 }
 
 // txToOutputs creates a signed transaction which includes each output from
-// outputs.  Previous outputs to reedeem are chosen from the passed account's
+// outputs. Previous outputs to redeem are chosen from the passed account's
 // UTXO set and minconf policy. An additional output may be added to return
-// change to the wallet.  An appropriate fee is included based on the wallet's
-// current relay fee.  The wallet must be unlocked to create the transaction.
+// change to the wallet. This output will have an address generated from the
+// given key scope and account. If a key scope is not specified, the address
+// will always be generated from the P2WKH key scope. An appropriate fee is
+// included based on the wallet's current relay fee. The wallet must be
+// unlocked to create the transaction.
 //
 // NOTE: The dryRun argument can be set true to create a tx that doesn't alter
 // the database. A tx created with this set to true will intentionally have no
 // input scripts added and SHOULD NOT be broadcasted.
-func (w *Wallet) txToOutputs(outputs []*wire.TxOut, account uint32,
-	minconf int32, feeSatPerKb ltcutil.Amount, dryRun bool) (
-	tx *txauthor.AuthoredTx, err error) {
+func (w *Wallet) txToOutputs(outputs []*wire.TxOut, keyScope *waddrmgr.KeyScope,
+	account uint32, minconf int32, feeSatPerKb ltcutil.Amount,
+	coinSelectionStrategy CoinSelectionStrategy, dryRun bool) (
+	*txauthor.AuthoredTx, error) {
 
 	chainClient, err := w.requireChainClient()
 	if err != nil {
 		return nil, err
 	}
-
-	dbtx, err := w.db.BeginReadWriteTx()
-	if err != nil {
-		return nil, err
-	}
-	defer dbtx.Rollback()
-
-	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 
 	// Get current block's height and hash.
 	bs, err := chainClient.BlockStamp()
@@ -128,94 +122,155 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut, account uint32,
 		return nil, err
 	}
 
-	eligible, err := w.findEligibleOutputs(dbtx, account, minconf, bs)
-	if err != nil {
-		return nil, err
-	}
-
-	inputSource := makeInputSource(eligible)
-	changeSource := func() ([]byte, error) {
-		// Derive the change output script. We'll use the default key
-		// scope responsible for P2WPKH addresses to do so. As a hack to
-		// allow spending from the imported account, change addresses
-		// are created from account 0.
-		var changeAddr ltcutil.Address
-		var err error
-		changeKeyScope := waddrmgr.KeyScopeBIP0084
-		if account == waddrmgr.ImportedAddrAccount {
-			changeAddr, err = w.newChangeAddress(
-				addrmgrNs, 0, changeKeyScope,
-			)
-		} else {
-			changeAddr, err = w.newChangeAddress(
-				addrmgrNs, account, changeKeyScope,
-			)
-		}
-		if err != nil {
-			return nil, err
-		}
-		return txscript.PayToAddrScript(changeAddr)
-	}
-	tx, err = txauthor.NewUnsignedTransaction(outputs, feeSatPerKb,
-		inputSource, changeSource)
-	if err != nil {
-		return nil, err
-	}
-
-	// Randomize change position, if change exists, before signing.  This
-	// doesn't affect the serialize size, so the change amount will still
-	// be valid.
-	if tx.ChangeIndex >= 0 {
-		tx.RandomizeChangePosition()
-	}
-
-	// If a dry run was requested, we return now before adding the input
-	// scripts, and don't commit the database transaction. The DB will be
-	// rolled back when this method returns to ensure the dry run didn't
-	// alter the DB in any way.
-	if dryRun {
-		return tx, nil
-	}
-
-	err = tx.AddAllInputScripts(secretSource{w.Manager, addrmgrNs})
-	if err != nil {
-		return nil, err
-	}
-
-	err = validateMsgTx(tx.Tx, tx.PrevScripts, tx.PrevInputValues)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := dbtx.Commit(); err != nil {
-		return nil, err
-	}
-
-	if tx.ChangeIndex >= 0 && account == waddrmgr.ImportedAddrAccount {
-		changeAmount := ltcutil.Amount(tx.Tx.TxOut[tx.ChangeIndex].Value)
-		log.Warnf("Spend from imported account produced change: moving"+
-			" %v from imported account into default account.", changeAmount)
-	}
-
-	// Finally, we'll request the backend to notify us of the transaction
-	// that pays to the change address, if there is one, when it confirms.
-	if tx.ChangeIndex >= 0 {
-		changePkScript := tx.Tx.TxOut[tx.ChangeIndex].PkScript
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
-			changePkScript, w.chainParams,
+	var tx *txauthor.AuthoredTx
+	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
+		addrmgrNs, changeSource, err := w.addrMgrWithChangeSource(
+			dbtx, keyScope, account,
 		)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if err := chainClient.NotifyReceived(addrs); err != nil {
-			return nil, err
+
+		eligible, err := w.findEligibleOutputs(
+			dbtx, keyScope, account, minconf, bs,
+		)
+		if err != nil {
+			return err
 		}
+
+		var inputSource txauthor.InputSource
+
+		switch coinSelectionStrategy {
+		// Pick largest outputs first.
+		case CoinSelectionLargest:
+			sort.Sort(sort.Reverse(byAmount(eligible)))
+			inputSource = makeInputSource(eligible)
+
+		// Select coins at random. This prevents the creation of ever
+		// smaller utxos over time that may never become economical to
+		// spend.
+		case CoinSelectionRandom:
+			// Skip inputs that do not raise the total transaction
+			// output value at the requested fee rate.
+			var positivelyYielding []wtxmgr.Credit
+			for _, output := range eligible {
+				output := output
+
+				if !inputYieldsPositively(&output, feeSatPerKb) {
+					continue
+				}
+
+				positivelyYielding = append(
+					positivelyYielding, output,
+				)
+			}
+
+			rand.Shuffle(len(positivelyYielding), func(i, j int) {
+				positivelyYielding[i], positivelyYielding[j] =
+					positivelyYielding[j], positivelyYielding[i]
+			})
+
+			inputSource = makeInputSource(positivelyYielding)
+		}
+
+		tx, err = txauthor.NewUnsignedTransaction(
+			outputs, feeSatPerKb, inputSource, changeSource,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Randomize change position, if change exists, before signing.
+		// This doesn't affect the serialize size, so the change amount
+		// will still be valid.
+		if tx.ChangeIndex >= 0 {
+			tx.RandomizeChangePosition()
+		}
+
+		// If a dry run was requested, we return now before adding the
+		// input scripts, and don't commit the database transaction.
+		// By returning an error, we make sure the walletdb.Update call
+		// rolls back the transaction. But we'll react to this specific
+		// error outside of the DB transaction so we can still return
+		// the produced chain TX.
+		if dryRun {
+			return walletdb.ErrDryRunRollBack
+		}
+
+		// Before committing the transaction, we'll sign our inputs. If
+		// the inputs are part of a watch-only account, there's no
+		// private key information stored, so we'll skip signing such.
+		var watchOnly bool
+		if keyScope == nil {
+			// If a key scope wasn't specified, then coin selection
+			// was performed from the default wallet accounts
+			// (NP2WKH, P2WKH), so any key scope provided doesn't
+			// impact the result of this call.
+			watchOnly, err = w.Manager.IsWatchOnlyAccount(
+				addrmgrNs, waddrmgr.KeyScopeBIP0084, account,
+			)
+		} else {
+			watchOnly, err = w.Manager.IsWatchOnlyAccount(
+				addrmgrNs, *keyScope, account,
+			)
+		}
+		if err != nil {
+			return err
+		}
+		if !watchOnly {
+			err = tx.AddAllInputScripts(
+				secretSource{w.Manager, addrmgrNs},
+			)
+			if err != nil {
+				return err
+			}
+
+			err = validateMsgTx(
+				tx.Tx, tx.PrevScripts, tx.PrevInputValues,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
+		if tx.ChangeIndex >= 0 && account == waddrmgr.ImportedAddrAccount {
+			changeAmount := ltcutil.Amount(
+				tx.Tx.TxOut[tx.ChangeIndex].Value,
+			)
+			log.Warnf("Spend from imported account produced "+
+				"change: moving %v from imported account into "+
+				"default account.", changeAmount)
+		}
+
+		// Finally, we'll request the backend to notify us of the
+		// transaction that pays to the change address, if there is one,
+		// when it confirms.
+		if tx.ChangeIndex >= 0 {
+			changePkScript := tx.Tx.TxOut[tx.ChangeIndex].PkScript
+			_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+				changePkScript, w.chainParams,
+			)
+			if err != nil {
+				return err
+			}
+			if err := chainClient.NotifyReceived(addrs); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil && err != walletdb.ErrDryRunRollBack {
+		return nil, err
 	}
 
 	return tx, nil
 }
 
-func (w *Wallet) findEligibleOutputs(dbtx walletdb.ReadTx, account uint32, minconf int32, bs *waddrmgr.BlockStamp) ([]wtxmgr.Credit, error) {
+func (w *Wallet) findEligibleOutputs(dbtx walletdb.ReadTx,
+	keyScope *waddrmgr.KeyScope, account uint32, minconf int32,
+	bs *waddrmgr.BlockStamp) ([]wtxmgr.Credit, error) {
+
 	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
@@ -228,7 +283,7 @@ func (w *Wallet) findEligibleOutputs(dbtx walletdb.ReadTx, account uint32, minco
 	// should be handled by the call to UnspentOutputs (or similar).
 	// Because one of these filters requires matching the output script to
 	// the desired account, this change depends on making wtxmgr a waddrmgr
-	// dependancy and requesting unspent outputs for a single account.
+	// dependency and requesting unspent outputs for a single account.
 	eligible := make([]wtxmgr.Credit, 0, len(unspent))
 	for i := range unspent {
 		output := &unspent[i]
@@ -261,13 +316,101 @@ func (w *Wallet) findEligibleOutputs(dbtx walletdb.ReadTx, account uint32, minco
 		if err != nil || len(addrs) != 1 {
 			continue
 		}
-		_, addrAcct, err := w.Manager.AddrAccount(addrmgrNs, addrs[0])
-		if err != nil || addrAcct != account {
+		scopedMgr, addrAcct, err := w.Manager.AddrAccount(addrmgrNs, addrs[0])
+		if err != nil {
+			continue
+		}
+		if keyScope != nil && scopedMgr.Scope() != *keyScope {
+			continue
+		}
+		if addrAcct != account {
 			continue
 		}
 		eligible = append(eligible, *output)
 	}
 	return eligible, nil
+}
+
+// inputYieldsPositively returns a boolean indicating whether this input yields
+// positively if added to a transaction. This determination is based on the
+// best-case added virtual size. For edge cases this function can return true
+// while the input is yielding slightly negative as part of the final
+// transaction.
+func inputYieldsPositively(credit *wtxmgr.Credit, feeRatePerKb ltcutil.Amount) bool {
+	inputSize := txsizes.GetMinInputVirtualSize(credit.PkScript)
+	inputFee := feeRatePerKb * ltcutil.Amount(inputSize) / 1000
+
+	return inputFee < credit.Amount
+}
+
+// addrMgrWithChangeSource returns the address manager bucket and a change
+// source that returns change addresses from said address manager. The change
+// addresses will come from the specified key scope and account, unless a key
+// scope is not specified. In that case, change addresses will always come from
+// the P2WKH key scope.
+func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
+	changeKeyScope *waddrmgr.KeyScope, account uint32) (
+	walletdb.ReadWriteBucket, *txauthor.ChangeSource, error) {
+
+	// Determine the address type for change addresses of the given account.
+	if changeKeyScope == nil {
+		changeKeyScope = &waddrmgr.KeyScopeBIP0084
+	}
+	addrType := waddrmgr.ScopeAddrMap[*changeKeyScope].InternalAddrType
+
+	// It's possible for the account to have an address schema override, so
+	// prefer that if it exists.
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	scopeMgr, err := w.Manager.FetchScopedKeyManager(*changeKeyScope)
+	if err != nil {
+		return nil, nil, err
+	}
+	accountInfo, err := scopeMgr.AccountProperties(addrmgrNs, account)
+	if err != nil {
+		return nil, nil, err
+	}
+	if accountInfo.AddrSchema != nil {
+		addrType = accountInfo.AddrSchema.InternalAddrType
+	}
+
+	// Compute the expected size of the script for the change address type.
+	var scriptSize int
+	switch addrType {
+	case waddrmgr.PubKeyHash:
+		scriptSize = txsizes.P2PKHPkScriptSize
+	case waddrmgr.NestedWitnessPubKey:
+		scriptSize = txsizes.NestedP2WPKHPkScriptSize
+	case waddrmgr.WitnessPubKey:
+		scriptSize = txsizes.P2WPKHPkScriptSize
+	}
+
+	newChangeScript := func() ([]byte, error) {
+		// Derive the change output script. As a hack to allow spending
+		// from the imported account, change addresses are created from
+		// account 0.
+		var (
+			changeAddr ltcutil.Address
+			err        error
+		)
+		if account == waddrmgr.ImportedAddrAccount {
+			changeAddr, err = w.newChangeAddress(
+				addrmgrNs, 0, *changeKeyScope,
+			)
+		} else {
+			changeAddr, err = w.newChangeAddress(
+				addrmgrNs, account, *changeKeyScope,
+			)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return txscript.PayToAddrScript(changeAddr)
+	}
+
+	return addrmgrNs, &txauthor.ChangeSource{
+		ScriptSize: scriptSize,
+		NewScript:  newChangeScript,
+	}, nil
 }
 
 // validateMsgTx verifies transaction input scripts for tx.  All previous output

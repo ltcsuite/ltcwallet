@@ -9,9 +9,8 @@ import (
 	"sync"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
@@ -90,7 +89,7 @@ func lookupOutputChain(dbtx walletdb.ReadTx, w *Wallet, details *wtxmgr.TxDetail
 	if err != nil {
 		log.Errorf("Cannot fetch account for wallet output: %v", err)
 	} else {
-		account = ma.Account()
+		account = ma.InternalAccount()
 		internal = ma.Internal()
 	}
 	return
@@ -184,7 +183,7 @@ func flattenBalanceMap(m map[uint32]ltcutil.Amount) []AccountBalance {
 	return s
 }
 
-func relevantAccounts(w *Wallet, m map[uint32]ltcutil.Amount, txs []TransactionSummary) {
+func relevantAccounts(_ *Wallet, m map[uint32]ltcutil.Amount, txs []TransactionSummary) {
 	for _, tx := range txs {
 		for _, d := range tx.MyInputs {
 			m[d.PreviousAccount] = 0
@@ -255,7 +254,7 @@ func (s *NotificationServer) notifyMinedTransaction(dbtx walletdb.ReadTx, detail
 	}
 	txs := s.currentTxNtfn.AttachedBlocks[n-1].Transactions
 	s.currentTxNtfn.AttachedBlocks[n-1].Transactions =
-		append(txs, makeTxSummary(dbtx, s.wallet, details))
+		append(txs, makeTxSummary(dbtx, s.wallet, details)) //  nolint:gocritic
 }
 
 func (s *NotificationServer) notifyAttachedBlock(dbtx walletdb.ReadTx, block *wtxmgr.BlockMeta) {
@@ -487,27 +486,6 @@ func (s *NotificationServer) notifyUnspentOutput(account uint32, hash *chainhash
 	n := &SpentnessNotifications{
 		hash:  hash,
 		index: index,
-	}
-	for _, c := range clients {
-		c <- n
-	}
-}
-
-// notifySpentOutput notifies registered clients that a previously-unspent
-// output is now spent, and includes the spender hash and input index in the
-// notification.
-func (s *NotificationServer) notifySpentOutput(account uint32, op *wire.OutPoint, spenderHash *chainhash.Hash, spenderIndex uint32) {
-	defer s.mu.Unlock()
-	s.mu.Lock()
-	clients := s.spentness[account]
-	if len(clients) == 0 {
-		return
-	}
-	n := &SpentnessNotifications{
-		hash:         &op.Hash,
-		index:        op.Index,
-		spenderHash:  spenderHash,
-		spenderIndex: spenderIndex,
 	}
 	for _, c := range clients {
 		c <- n

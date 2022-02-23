@@ -7,8 +7,8 @@
 package helpers
 
 import (
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // SumOutputValues sums up the list of TxOuts and returns an Amount.

@@ -6,19 +6,26 @@ package wallet
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcwallet/internal/prompt"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
 const (
-	walletDbName = "wallet.db"
+	// WalletDBName specified the database filename for the wallet.
+	WalletDBName = "wallet.db"
+
+	// DefaultDBTimeout is the default timeout value when opening the wallet
+	// database.
+	DefaultDBTimeout = 60 * time.Second
 )
 
 var (
@@ -47,8 +54,12 @@ type Loader struct {
 	chainParams    *chaincfg.Params
 	dbDirPath      string
 	noFreelistSync bool
+	timeout        time.Duration
 	recoveryWindow uint32
 	wallet         *Wallet
+	localDB        bool
+	walletExists   func() (bool, error)
+	walletCreated  func(db walletdb.ReadWriteTx) error
 	db             walletdb.DB
 	mu             sync.Mutex
 }
@@ -57,25 +68,51 @@ type Loader struct {
 // recovery window is non-zero, the wallet will attempt to recovery addresses
 // starting from the last SyncedTo height.
 func NewLoader(chainParams *chaincfg.Params, dbDirPath string,
-	noFreelistSync bool, recoveryWindow uint32) *Loader {
+	noFreelistSync bool, timeout time.Duration,
+	recoveryWindow uint32) *Loader {
 
 	return &Loader{
 		chainParams:    chainParams,
 		dbDirPath:      dbDirPath,
 		noFreelistSync: noFreelistSync,
+		timeout:        timeout,
 		recoveryWindow: recoveryWindow,
+		localDB:        true,
 	}
+}
+
+// NewLoaderWithDB constructs a Loader with an externally provided DB. This way
+// users are free to use their own walletdb implementation (eg. leveldb, etcd)
+// to store the wallet. Given that the external DB may be shared an additional
+// function is also passed which will override Loader.WalletExists().
+func NewLoaderWithDB(chainParams *chaincfg.Params, recoveryWindow uint32,
+	db walletdb.DB, walletExists func() (bool, error)) (*Loader, error) {
+
+	if db == nil {
+		return nil, fmt.Errorf("no DB provided")
+	}
+
+	if walletExists == nil {
+		return nil, fmt.Errorf("unable to check if wallet exists")
+	}
+
+	return &Loader{
+		chainParams:    chainParams,
+		recoveryWindow: recoveryWindow,
+		localDB:        false,
+		walletExists:   walletExists,
+		db:             db,
+	}, nil
 }
 
 // onLoaded executes each added callback and prevents loader from loading any
 // additional wallets.  Requires mutex to be locked.
-func (l *Loader) onLoaded(w *Wallet, db walletdb.DB) {
+func (l *Loader) onLoaded(w *Wallet) {
 	for _, fn := range l.callbacks {
 		fn(w)
 	}
 
 	l.wallet = w
-	l.db = db
 	l.callbacks = nil // not needed anymore
 }
 
@@ -94,14 +131,57 @@ func (l *Loader) RunAfterLoad(fn func(*Wallet)) {
 	}
 }
 
+// OnWalletCreated adds a function that will be executed the wallet structure
+// is initialized in the wallet database. This is useful if users want to add
+// extra fields in the same transaction (eg. to flag wallet existence).
+func (l *Loader) OnWalletCreated(fn func(walletdb.ReadWriteTx) error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.walletCreated = fn
+}
+
 // CreateNewWallet creates a new wallet using the provided public and private
 // passphrases.  The seed is optional.  If non-nil, addresses are derived from
 // this seed.  If nil, a secure random seed is generated.
 func (l *Loader) CreateNewWallet(pubPassphrase, privPassphrase, seed []byte,
 	bday time.Time) (*Wallet, error) {
 
+	var (
+		rootKey *hdkeychain.ExtendedKey
+		err     error
+	)
+
+	// If a seed was specified, we check its length now. If no seed is
+	// passed, the wallet will create a new random one.
+	if seed != nil {
+		if len(seed) < hdkeychain.MinSeedBytes ||
+			len(seed) > hdkeychain.MaxSeedBytes {
+
+			return nil, hdkeychain.ErrInvalidSeedLen
+		}
+
+		// Derive the master extended key from the seed.
+		rootKey, err = hdkeychain.NewMaster(seed, l.chainParams)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive master " +
+				"extended key")
+		}
+	}
+
 	return l.createNewWallet(
-		pubPassphrase, privPassphrase, seed, bday, false,
+		pubPassphrase, privPassphrase, rootKey, bday, false,
+	)
+}
+
+// CreateNewWalletExtendedKey creates a new wallet from an extended master root
+// key using the provided public and private passphrases.  The root key is
+// optional.  If non-nil, addresses are derived from this root key.  If nil, a
+// secure random seed is generated and the root key is derived from that.
+func (l *Loader) CreateNewWalletExtendedKey(pubPassphrase, privPassphrase []byte,
+	rootKey *hdkeychain.ExtendedKey, bday time.Time) (*Wallet, error) {
+
+	return l.createNewWallet(
+		pubPassphrase, privPassphrase, rootKey, bday, false,
 	)
 }
 
@@ -116,8 +196,9 @@ func (l *Loader) CreateNewWatchingOnlyWallet(pubPassphrase []byte,
 	)
 }
 
-func (l *Loader) createNewWallet(pubPassphrase, privPassphrase,
-	seed []byte, bday time.Time, isWatchingOnly bool) (*Wallet, error) {
+func (l *Loader) createNewWallet(pubPassphrase, privPassphrase []byte,
+	rootKey *hdkeychain.ExtendedKey, bday time.Time,
+	isWatchingOnly bool) (*Wallet, error) {
 
 	defer l.mu.Unlock()
 	l.mu.Lock()
@@ -126,8 +207,7 @@ func (l *Loader) createNewWallet(pubPassphrase, privPassphrase,
 		return nil, ErrLoaded
 	}
 
-	dbPath := filepath.Join(l.dbDirPath, walletDbName)
-	exists, err := fileExists(dbPath)
+	exists, err := l.WalletExists()
 	if err != nil {
 		return nil, err
 	}
@@ -135,25 +215,35 @@ func (l *Loader) createNewWallet(pubPassphrase, privPassphrase,
 		return nil, ErrExists
 	}
 
-	// Create the wallet database backed by bolt db.
-	err = os.MkdirAll(l.dbDirPath, 0700)
-	if err != nil {
-		return nil, err
-	}
-	db, err := walletdb.Create("bdb", dbPath, l.noFreelistSync)
-	if err != nil {
-		return nil, err
+	if l.localDB {
+		dbPath := filepath.Join(l.dbDirPath, WalletDBName)
+
+		// Create the wallet database backed by bolt db.
+		err = os.MkdirAll(l.dbDirPath, 0700)
+		if err != nil {
+			return nil, err
+		}
+		l.db, err = walletdb.Create(
+			"bdb", dbPath, l.noFreelistSync, l.timeout,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Initialize the newly created database for the wallet before opening.
 	if isWatchingOnly {
-		err = CreateWatchingOnly(db, pubPassphrase, l.chainParams, bday)
+		err := CreateWatchingOnlyWithCallback(
+			l.db, pubPassphrase, l.chainParams, bday,
+			l.walletCreated,
+		)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err = Create(
-			db, pubPassphrase, privPassphrase, seed, l.chainParams, bday,
+		err := CreateWithCallback(
+			l.db, pubPassphrase, privPassphrase, rootKey,
+			l.chainParams, bday, l.walletCreated,
 		)
 		if err != nil {
 			return nil, err
@@ -161,13 +251,13 @@ func (l *Loader) createNewWallet(pubPassphrase, privPassphrase,
 	}
 
 	// Open the newly-created wallet.
-	w, err := Open(db, pubPassphrase, nil, l.chainParams, l.recoveryWindow)
+	w, err := Open(l.db, pubPassphrase, nil, l.chainParams, l.recoveryWindow)
 	if err != nil {
 		return nil, err
 	}
 	w.Start()
 
-	l.onLoaded(w, db)
+	l.onLoaded(w)
 	return w, nil
 }
 
@@ -189,17 +279,22 @@ func (l *Loader) OpenExistingWallet(pubPassphrase []byte, canConsolePrompt bool)
 		return nil, ErrLoaded
 	}
 
-	// Ensure that the network directory exists.
-	if err := checkCreateDir(l.dbDirPath); err != nil {
-		return nil, err
-	}
+	if l.localDB {
+		var err error
+		// Ensure that the network directory exists.
+		if err = checkCreateDir(l.dbDirPath); err != nil {
+			return nil, err
+		}
 
-	// Open the database using the boltdb backend.
-	dbPath := filepath.Join(l.dbDirPath, walletDbName)
-	db, err := walletdb.Open("bdb", dbPath, l.noFreelistSync)
-	if err != nil {
-		log.Errorf("Failed to open database: %v", err)
-		return nil, err
+		// Open the database using the boltdb backend.
+		dbPath := filepath.Join(l.dbDirPath, WalletDBName)
+		l.db, err = walletdb.Open(
+			"bdb", dbPath, l.noFreelistSync, l.timeout,
+		)
+		if err != nil {
+			log.Errorf("Failed to open database: %v", err)
+			return nil, err
+		}
 	}
 
 	var cbs *waddrmgr.OpenCallbacks
@@ -214,28 +309,35 @@ func (l *Loader) OpenExistingWallet(pubPassphrase []byte, canConsolePrompt bool)
 			ObtainPrivatePass: noConsole,
 		}
 	}
-	w, err := Open(db, pubPassphrase, cbs, l.chainParams, l.recoveryWindow)
+	w, err := Open(l.db, pubPassphrase, cbs, l.chainParams, l.recoveryWindow)
 	if err != nil {
 		// If opening the wallet fails (e.g. because of wrong
 		// passphrase), we must close the backing database to
 		// allow future calls to walletdb.Open().
-		e := db.Close()
-		if e != nil {
-			log.Warnf("Error closing database: %v", e)
+		if l.localDB {
+			e := l.db.Close()
+			if e != nil {
+				log.Warnf("Error closing database: %v", e)
+			}
 		}
+
 		return nil, err
 	}
 	w.Start()
 
-	l.onLoaded(w, db)
+	l.onLoaded(w)
 	return w, nil
 }
 
 // WalletExists returns whether a file exists at the loader's database path.
 // This may return an error for unexpected I/O failures.
 func (l *Loader) WalletExists() (bool, error) {
-	dbPath := filepath.Join(l.dbDirPath, walletDbName)
-	return fileExists(dbPath)
+	if l.localDB {
+		dbPath := filepath.Join(l.dbDirPath, WalletDBName)
+		return fileExists(dbPath)
+	}
+
+	return l.walletExists()
 }
 
 // LoadedWallet returns the loaded wallet, if any, and a bool for whether the
@@ -262,9 +364,11 @@ func (l *Loader) UnloadWallet() error {
 
 	l.wallet.Stop()
 	l.wallet.WaitForShutdown()
-	err := l.db.Close()
-	if err != nil {
-		return err
+	if l.localDB {
+		err := l.db.Close()
+		if err != nil {
+			return err
+		}
 	}
 
 	l.wallet = nil

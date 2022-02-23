@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // AmountFlag embeds a ltcutil.Amount and implements the flags.Marshaler and
@@ -22,12 +22,12 @@ func NewAmountFlag(defaultValue ltcutil.Amount) *AmountFlag {
 	return &AmountFlag{defaultValue}
 }
 
-// MarshalFlag satisifes the flags.Marshaler interface.
+// MarshalFlag satisfies the flags.Marshaler interface.
 func (a *AmountFlag) MarshalFlag() (string, error) {
 	return a.Amount.String(), nil
 }
 
-// UnmarshalFlag satisifes the flags.Unmarshaler interface.
+// UnmarshalFlag satisfies the flags.Unmarshaler interface.
 func (a *AmountFlag) UnmarshalFlag(value string) error {
 	value = strings.TrimSuffix(value, " LTC")
 	valueF64, err := strconv.ParseFloat(value, 64)

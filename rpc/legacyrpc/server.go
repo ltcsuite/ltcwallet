@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
@@ -58,12 +57,11 @@ func (c *websocketClient) send(b []byte) error {
 // Server holds the items the RPC server may need to access (auth,
 // config, shutdown, etc.)
 type Server struct {
-	httpServer    http.Server
-	wallet        *wallet.Wallet
-	walletLoader  *wallet.Loader
-	chainClient   chain.Interface
-	handlerLookup func(string) (requestHandler, bool)
-	handlerMu     sync.Mutex
+	httpServer   http.Server
+	wallet       *wallet.Wallet
+	walletLoader *wallet.Loader
+	chainClient  chain.Interface
+	handlerMu    sync.Mutex
 
 	listeners []net.Listener
 	authsha   [sha256.Size]byte
@@ -81,7 +79,7 @@ type Server struct {
 
 // jsonAuthFail sends a message back to the client if the http auth is rejected.
 func jsonAuthFail(w http.ResponseWriter) {
-	w.Header().Add("WWW-Authenticate", `Basic realm="btcwallet RPC"`)
+	w.Header().Add("WWW-Authenticate", `Basic realm="ltcwallet RPC"`)
 	http.Error(w, "401 Unauthorized.", http.StatusUnauthorized)
 }
 
@@ -326,30 +324,12 @@ func throttled(threshold int64, h http.Handler) http.Handler {
 
 		if current-1 >= threshold {
 			log.Warnf("Reached threshold of %d concurrent active clients", threshold)
-			http.Error(w, "429 Too Many Requests", 429)
+			http.Error(w, "429 Too Many Requests", http.StatusTooManyRequests)
 			return
 		}
 
 		h.ServeHTTP(w, r)
 	})
-}
-
-// sanitizeRequest returns a sanitized string for the request which may be
-// safely logged.  It is intended to strip private keys, passphrases, and any
-// other secrets from request parameters before they may be saved to a log file.
-func sanitizeRequest(r *btcjson.Request) string {
-	// These are considered unsafe to log, so sanitize parameters.
-	switch r.Method {
-	case "encryptwallet", "importprivkey", "importwallet",
-		"signrawtransaction", "walletpassphrase",
-		"walletpassphrasechange":
-
-		return fmt.Sprintf(`{"id":%v,"method":"%s","params":SANITIZED %d parameters}`,
-			r.ID, r.Method, len(r.Params))
-	}
-
-	return fmt.Sprintf(`{"id":%v,"method":"%s","params":%v}`, r.ID,
-		r.Method, r.Params)
 }
 
 // idPointer returns a pointer to the passed ID, or nil if the interface is nil.
@@ -462,7 +442,7 @@ out:
 			switch req.Method {
 			case "stop":
 				resp := makeResponse(req.ID,
-					"btcwallet stopping.", nil)
+					"ltcwallet stopping.", nil)
 				mresp, err := json.Marshal(resp)
 				// Expected to never fail.
 				if err != nil {
@@ -473,7 +453,7 @@ out:
 					break out
 				}
 				s.requestProcessShutdown()
-				break
+				break out
 
 			default:
 				req := req // Copy for the closure
@@ -481,9 +461,13 @@ out:
 				wsc.wg.Add(1)
 				go func() {
 					resp, jsonErr := f()
-					mresp, err := btcjson.MarshalResponse(req.ID, resp, jsonErr)
+					mresp, err := btcjson.MarshalResponse(
+						btcjson.RpcVersion1, req.ID,
+						resp, jsonErr,
+					)
 					if err != nil {
-						log.Errorf("Unable to marshal response: %v", err)
+						log.Errorf("Unable to marshal "+
+							"response: %v", err)
 					} else {
 						_ = wsc.send(mresp)
 					}
@@ -580,7 +564,10 @@ func (s *Server) postClientRPC(w http.ResponseWriter, r *http.Request) {
 	var req btcjson.Request
 	err = json.Unmarshal(rpcRequest, &req)
 	if err != nil {
-		resp, err := btcjson.MarshalResponse(req.ID, nil, btcjson.ErrRPCInvalidRequest)
+		resp, err := btcjson.MarshalResponse(
+			btcjson.RpcVersion1, req.ID, nil,
+			btcjson.ErrRPCInvalidRequest,
+		)
 		if err != nil {
 			log.Errorf("Unable to marshal response: %v", err)
 			http.Error(w, "500 Internal Server Error",
@@ -606,13 +593,15 @@ func (s *Server) postClientRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	case "stop":
 		stop = true
-		res = "btcwallet stopping"
+		res = "ltcwallet stopping"
 	default:
 		res, jsonErr = s.handlerClosure(&req)()
 	}
 
 	// Marshal and send.
-	mresp, err := btcjson.MarshalResponse(req.ID, res, jsonErr)
+	mresp, err := btcjson.MarshalResponse(
+		btcjson.RpcVersion1, req.ID, res, jsonErr,
+	)
 	if err != nil {
 		log.Errorf("Unable to marshal response: %v", err)
 		http.Error(w, "500 Internal Server Error", http.StatusInternalServerError)

@@ -7,16 +7,16 @@ package keystore
 import (
 	"bytes"
 	"crypto/rand"
-	"math/big"
 	"reflect"
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcutil"
 )
 
 const dummyDir = ""
@@ -277,43 +277,17 @@ func TestChaining(t *testing.T) {
 
 		// Sign data with the next private keys and verify signature with
 		// the next pubkeys.
-		pubkeyUncompressed, err := btcec.ParsePubKey(nextPubUncompressedFromPub, btcec.S256())
-		if err != nil {
-			t.Errorf("%s: Unable to parse next uncompressed pubkey: %v", test.name, err)
-			return
-		}
-		pubkeyCompressed, err := btcec.ParsePubKey(nextPubCompressedFromPub, btcec.S256())
-		if err != nil {
-			t.Errorf("%s: Unable to parse next compressed pubkey: %v", test.name, err)
-			return
-		}
-		privkeyUncompressed := &btcec.PrivateKey{
-			PublicKey: *pubkeyUncompressed.ToECDSA(),
-			D:         new(big.Int).SetBytes(nextPrivUncompressed),
-		}
-		privkeyCompressed := &btcec.PrivateKey{
-			PublicKey: *pubkeyCompressed.ToECDSA(),
-			D:         new(big.Int).SetBytes(nextPrivCompressed),
-		}
 		data := "String to sign."
-		sig, err := privkeyUncompressed.Sign([]byte(data))
-		if err != nil {
-			t.Errorf("%s: Unable to sign data with next private key (chained from uncompressed pubkey): %v",
-				test.name, err)
-			return
-		}
+		privkeyUncompressed, _ := btcec.PrivKeyFromBytes(nextPrivUncompressed)
+		privkeyCompressed, _ := btcec.PrivKeyFromBytes(nextPrivCompressed)
+		sig := ecdsa.Sign(privkeyUncompressed, []byte(data))
 		ok := sig.Verify([]byte(data), privkeyUncompressed.PubKey())
 		if !ok {
 			t.Errorf("%s: btcec signature verification failed for next keypair (chained from uncompressed pubkey).",
 				test.name)
 			return
 		}
-		sig, err = privkeyCompressed.Sign([]byte(data))
-		if err != nil {
-			t.Errorf("%s: Unable to sign data with next private key (chained from compressed pubkey): %v",
-				test.name, err)
-			return
-		}
+		sig = ecdsa.Sign(privkeyCompressed, []byte(data))
 		ok = sig.Verify([]byte(data), privkeyCompressed.PubKey())
 		if !ok {
 			t.Errorf("%s: btcec signature verification failed for next keypair (chained from compressed pubkey).",
@@ -426,11 +400,7 @@ func TestWalletPubkeyChaining(t *testing.T) {
 
 	// Sign some data with the private key, then verify signature with the pubkey.
 	hash := []byte("hash to sign")
-	sig, err := key1.Sign(hash)
-	if err != nil {
-		t.Errorf("Unable to sign hash with the created private key: %v", err)
-		return
-	}
+	sig := ecdsa.Sign(key1, hash)
 	pubKey := pkinfo.PubKey()
 	ok := sig.Verify(hash, pubKey)
 	if !ok {
@@ -458,11 +428,7 @@ func TestWalletPubkeyChaining(t *testing.T) {
 
 	// Do a signature check here as well, this time for the next
 	// address after the one made without the private key.
-	sig, err = nextKey.Sign(hash)
-	if err != nil {
-		t.Errorf("Unable to sign hash with the created private key: %v", err)
-		return
-	}
+	sig = ecdsa.Sign(nextKey, hash)
 	pubKey = nextPkInfo.PubKey()
 	ok = sig.Verify(hash, pubKey)
 	if !ok {
@@ -663,7 +629,7 @@ func TestWatchingWalletExport(t *testing.T) {
 		t.Errorf("Nonsensical func ExportWatchingWallet returned no or incorrect error: %v", err)
 		return
 	}
-	pk, _ := btcec.PrivKeyFromBytes(btcec.S256(), make([]byte, 32))
+	pk, _ := btcec.PrivKeyFromBytes(make([]byte, 32))
 	wif, err := ltcutil.NewWIF(pk, tstNetParams, true)
 	if err != nil {
 		t.Fatal(err)
@@ -689,7 +655,7 @@ func TestImportPrivateKey(t *testing.T) {
 		return
 	}
 
-	pk, err := btcec.NewPrivateKey(btcec.S256())
+	pk, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Error("Error generating private key: " + err.Error())
 		return
@@ -703,7 +669,7 @@ func TestImportPrivateKey(t *testing.T) {
 	}
 
 	// import priv key
-	wif, err := ltcutil.NewWIF((*btcec.PrivateKey)(pk), tstNetParams, false)
+	wif, err := ltcutil.NewWIF(pk, tstNetParams, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -761,8 +727,8 @@ func TestImportPrivateKey(t *testing.T) {
 		return
 	}
 
-	// Mark imported address as partially synced with a block somewhere inbetween
-	// the import height and the chain height.
+	// Mark imported address as partially synced with a block somewhere in
+	// between the import height and the chain height.
 	partialHeight := (createHeight-importHeight)/2 + importHeight
 	if err := w2.SetSyncStatus(address, PartialSync(partialHeight)); err != nil {
 		t.Errorf("Cannot mark address partially synced: %v", err)
@@ -1037,7 +1003,7 @@ func TestImportScript(t *testing.T) {
 		return
 	}
 
-	if sinfo.RequiredSigs() != sinfo.RequiredSigs() {
+	if sinfo.RequiredSigs() != sinfo2.RequiredSigs() {
 		t.Errorf("original and serailised scriptinfo requiredsigs "+
 			"don't match %d != %d", sinfo.RequiredSigs(),
 			sinfo2.RequiredSigs())
@@ -1063,8 +1029,8 @@ func TestImportScript(t *testing.T) {
 		return
 	}
 
-	// Mark imported address as partially synced with a block somewhere inbetween
-	// the import height and the chain height.
+	// Mark imported address as partially synced with a block somewhere in
+	// between the import height and the chain height.
 	partialHeight := (createHeight-importHeight)/2 + importHeight
 	if err := w2.SetSyncStatus(address, PartialSync(partialHeight)); err != nil {
 		t.Errorf("Cannot mark address partially synced: %v", err)

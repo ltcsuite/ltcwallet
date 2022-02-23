@@ -10,11 +10,10 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/btcjson"
-	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
 )
@@ -39,10 +38,6 @@ type BitcoindClient struct {
 	// birthday is the earliest time for which we should begin scanning the
 	// chain.
 	birthday time.Time
-
-	// chainParams are the parameters of the current chain this client is
-	// active under.
-	chainParams *chaincfg.Params
 
 	// id is the unique ID of this client assigned by the backing bitcoind
 	// connection.
@@ -145,7 +140,7 @@ func (c *BitcoindClient) GetBlockHeight(hash *chainhash.Hash) (int32, error) {
 
 // GetBlock returns a block from the hash.
 func (c *BitcoindClient) GetBlock(hash *chainhash.Hash) (*wire.MsgBlock, error) {
-	return c.chainConn.client.GetBlock(hash)
+	return c.chainConn.GetBlock(hash)
 }
 
 // GetBlockVerbose returns a verbose block from the hash.
@@ -221,7 +216,7 @@ func (c *BitcoindClient) Notifications() <-chan interface{} {
 //
 // NOTE: This is part of the chain.Interface interface.
 func (c *BitcoindClient) NotifyReceived(addrs []ltcutil.Address) error {
-	c.NotifyBlocks()
+	_ = c.NotifyBlocks()
 
 	select {
 	case c.rescanUpdate <- addrs:
@@ -235,7 +230,7 @@ func (c *BitcoindClient) NotifyReceived(addrs []ltcutil.Address) error {
 // NotifySpent allows the chain backend to notify the caller whenever a
 // transaction spends any of the given outpoints.
 func (c *BitcoindClient) NotifySpent(outPoints []*wire.OutPoint) error {
-	c.NotifyBlocks()
+	_ = c.NotifyBlocks()
 
 	select {
 	case c.rescanUpdate <- outPoints:
@@ -249,7 +244,7 @@ func (c *BitcoindClient) NotifySpent(outPoints []*wire.OutPoint) error {
 // NotifyTx allows the chain backend to notify the caller whenever any of the
 // given transactions confirm within the chain.
 func (c *BitcoindClient) NotifyTx(txids []chainhash.Hash) error {
-	c.NotifyBlocks()
+	_ = c.NotifyBlocks()
 
 	select {
 	case c.rescanUpdate <- txids:
@@ -371,6 +366,8 @@ func (c *BitcoindClient) RescanBlocks(
 
 	rescannedBlocks := make([]btcjson.RescannedBlock, 0, len(blockHashes))
 	for _, hash := range blockHashes {
+		hash := hash
+
 		header, err := c.GetBlockHeaderVerbose(&hash)
 		if err != nil {
 			log.Warnf("Unable to get header %s from bitcoind: %s",
@@ -618,7 +615,7 @@ func (c *BitcoindClient) ntfnHandler() {
 				newBlockHeight := bestBlock.Height + 1
 				_ = c.filterBlock(newBlock, newBlockHeight, true)
 
-				// With the block succesfully filtered, we'll
+				// With the block successfully filtered, we'll
 				// make it our new best block.
 				bestBlock.Hash = newBlock.BlockHash()
 				bestBlock.Height = newBlockHeight
@@ -847,10 +844,11 @@ func (c *BitcoindClient) reorg(currentBlock waddrmgr.BlockStamp,
 
 		// Our current block should now reflect the previous one to
 		// continue the common ancestor search.
-		currentHeader, err = c.GetBlockHeader(&currentHeader.PrevBlock)
+		prevBlock := &currentHeader.PrevBlock
+		currentHeader, err = c.GetBlockHeader(prevBlock)
 		if err != nil {
 			return fmt.Errorf("unable to get block header for %v: %v",
-				currentHeader.PrevBlock, err)
+				prevBlock, err)
 		}
 
 		currentBlock.Height--
@@ -917,7 +915,7 @@ func (c *BitcoindClient) reorg(currentBlock waddrmgr.BlockStamp,
 func (c *BitcoindClient) FilterBlocks(
 	req *FilterBlocksRequest) (*FilterBlocksResponse, error) {
 
-	blockFilterer := NewBlockFilterer(c.chainParams, req)
+	blockFilterer := NewBlockFilterer(c.chainConn.cfg.ChainParams, req)
 
 	// Iterate over the requested blocks, fetching each from the rpc client.
 	// Each block will scanned using the reverse addresses indexes generated
@@ -1279,7 +1277,7 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 			// Non-standard outputs can be safely skipped.
 			continue
 		}
-		addr, err := pkScript.Address(c.chainParams)
+		addr, err := pkScript.Address(c.chainConn.cfg.ChainParams)
 		if err != nil {
 			// Non-standard outputs can be safely skipped.
 			continue
@@ -1295,7 +1293,7 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 	// add it to our watch list.
 	for i, txOut := range tx.TxOut {
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
-			txOut.PkScript, c.chainParams,
+			txOut.PkScript, c.chainConn.cfg.ChainParams,
 		)
 		if err != nil {
 			// Non-standard outputs can be safely skipped.

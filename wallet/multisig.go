@@ -8,8 +8,8 @@ package wallet
 import (
 	"errors"
 
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
@@ -27,7 +27,7 @@ func (w *Wallet) MakeMultiSigScript(addrs []ltcutil.Address, nRequired int) ([]b
 	var addrmgrNs walletdb.ReadBucket
 	defer func() {
 		if dbtx != nil {
-			dbtx.Rollback()
+			_ = dbtx.Rollback()
 		}
 	}()
 

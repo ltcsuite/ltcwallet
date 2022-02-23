@@ -60,12 +60,15 @@ It has these top-level messages:
 */
 package walletrpc
 
-import proto "github.com/golang/protobuf/proto"
-import fmt "fmt"
-import math "math"
-
 import (
+	fmt "fmt"
+
+	proto "github.com/golang/protobuf/proto"
+
+	math "math"
+
 	context "golang.org/x/net/context"
+
 	grpc "google.golang.org/grpc"
 )
 
@@ -1210,10 +1213,12 @@ type SpentnessNotificationsResponse struct {
 	Spender         *SpentnessNotificationsResponse_Spender `protobuf:"bytes,3,opt,name=spender" json:"spender,omitempty"`
 }
 
-func (m *SpentnessNotificationsResponse) Reset()                    { *m = SpentnessNotificationsResponse{} }
-func (m *SpentnessNotificationsResponse) String() string            { return proto.CompactTextString(m) }
-func (*SpentnessNotificationsResponse) ProtoMessage()               {}
-func (*SpentnessNotificationsResponse) Descriptor() ([]byte, []int) { return fileDescriptor0, []int{36} }
+func (m *SpentnessNotificationsResponse) Reset()         { *m = SpentnessNotificationsResponse{} }
+func (m *SpentnessNotificationsResponse) String() string { return proto.CompactTextString(m) }
+func (*SpentnessNotificationsResponse) ProtoMessage()    {}
+func (*SpentnessNotificationsResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor0, []int{36}
+}
 
 func (m *SpentnessNotificationsResponse) GetTransactionHash() []byte {
 	if m != nil {

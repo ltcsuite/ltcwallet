@@ -17,14 +17,14 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/ltcd/blockchain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
@@ -44,8 +44,6 @@ const (
 	// NOTE: at time of writing, public encryption only applies to public
 	// data in the waddrmgr namespace.  Transactions are not yet encrypted.
 	InsecurePubPassphrase = "public"
-
-	walletDbWatchingOnlyName = "wowallet.db"
 
 	// recoveryBatchSize is the default number of blocks that will be
 	// scanned successively by the recovery manager, in the event that the
@@ -74,9 +72,26 @@ var (
 	// to true.
 	ErrTxLabelExists = errors.New("transaction already labelled")
 
+	// ErrTxUnsigned is returned when a transaction is created in the
+	// watch-only mode where we can select coins but not sign any inputs.
+	ErrTxUnsigned = errors.New("watch-only wallet, transaction not signed")
+
 	// Namespace bucket keys.
 	waddrmgrNamespaceKey = []byte("waddrmgr")
 	wtxmgrNamespaceKey   = []byte("wtxmgr")
+)
+
+type CoinSelectionStrategy int
+
+const (
+	// CoinSelectionLargest always picks the largest available utxo to add
+	// to the transaction next.
+	CoinSelectionLargest CoinSelectionStrategy = iota
+
+	// CoinSelectionRandom randomly selects the next utxo to add to the
+	// transaction. This strategy prevents the creation of ever smaller
+	// utxos over time.
+	CoinSelectionRandom
 )
 
 // Wallet is a structure containing all the components for a
@@ -119,11 +134,6 @@ type Wallet struct {
 	lockState          chan bool
 	changePassphrase   chan changePassphraseRequest
 	changePassphrases  chan changePassphrasesRequest
-
-	// Information for reorganization handling.
-	reorganizingLock sync.Mutex
-	reorganizeToHash chainhash.Hash
-	reorganizing     bool
 
 	NtfnServer *NotificationServer
 
@@ -606,7 +616,7 @@ func locateBirthdayBlock(chainClient chainConn,
 		if mid == startHeight || mid == bestHeight || mid == left {
 			birthdayBlock = &waddrmgr.BlockStamp{
 				Hash:      *hash,
-				Height:    int32(mid),
+				Height:    mid,
 				Timestamp: header.Timestamp,
 			}
 			break
@@ -628,7 +638,7 @@ func locateBirthdayBlock(chainClient chainConn,
 
 		birthdayBlock = &waddrmgr.BlockStamp{
 			Hash:      *hash,
-			Height:    int32(mid),
+			Height:    mid,
 			Timestamp: header.Timestamp,
 		}
 		break
@@ -837,6 +847,7 @@ expandHorizons:
 	// Update the global set of watched outpoints with any that were found
 	// in the block.
 	for outPoint, addr := range filterResp.FoundOutPoints {
+		outPoint := outPoint
 		recoveryState.AddWatchedOutPoint(&outPoint, addr)
 	}
 
@@ -946,18 +957,20 @@ func expandScopeHorizons(ns walletdb.ReadWriteBucket,
 // externalKeyPath returns the relative external derivation path /0/0/index.
 func externalKeyPath(index uint32) waddrmgr.DerivationPath {
 	return waddrmgr.DerivationPath{
-		Account: waddrmgr.DefaultAccountNum,
-		Branch:  waddrmgr.ExternalBranch,
-		Index:   index,
+		InternalAccount: waddrmgr.DefaultAccountNum,
+		Account:         waddrmgr.DefaultAccountNum,
+		Branch:          waddrmgr.ExternalBranch,
+		Index:           index,
 	}
 }
 
 // internalKeyPath returns the relative internal derivation path /0/1/index.
 func internalKeyPath(index uint32) waddrmgr.DerivationPath {
 	return waddrmgr.DerivationPath{
-		Account: waddrmgr.DefaultAccountNum,
-		Branch:  waddrmgr.InternalBranch,
-		Index:   index,
+		InternalAccount: waddrmgr.DefaultAccountNum,
+		Account:         waddrmgr.DefaultAccountNum,
+		Branch:          waddrmgr.InternalBranch,
+		Index:           index,
 	}
 }
 
@@ -1129,12 +1142,14 @@ func logFilterBlocksResp(block wtxmgr.BlockMeta,
 
 type (
 	createTxRequest struct {
-		account     uint32
-		outputs     []*wire.TxOut
-		minconf     int32
-		feeSatPerKB ltcutil.Amount
-		dryRun      bool
-		resp        chan createTxResponse
+		keyScope              *waddrmgr.KeyScope
+		account               uint32
+		outputs               []*wire.TxOut
+		minconf               int32
+		feeSatPerKB           ltcutil.Amount
+		coinSelectionStrategy CoinSelectionStrategy
+		dryRun                bool
+		resp                  chan createTxResponse
 	}
 	createTxResponse struct {
 		tx  *txauthor.AuthoredTx
@@ -1158,14 +1173,27 @@ out:
 	for {
 		select {
 		case txr := <-w.createTxRequests:
-			heldUnlock, err := w.holdUnlock()
-			if err != nil {
-				txr.resp <- createTxResponse{nil, err}
-				continue
+			// If the wallet can be locked because it contains
+			// private key material, we need to prevent it from
+			// doing so while we are assembling the transaction.
+			release := func() {}
+			if !w.Manager.WatchOnly() {
+				heldUnlock, err := w.holdUnlock()
+				if err != nil {
+					txr.resp <- createTxResponse{nil, err}
+					continue
+				}
+
+				release = heldUnlock.release
 			}
-			tx, err := w.txToOutputs(txr.outputs, txr.account,
-				txr.minconf, txr.feeSatPerKB, txr.dryRun)
-			heldUnlock.release()
+
+			tx, err := w.txToOutputs(
+				txr.outputs, txr.keyScope, txr.account,
+				txr.minconf, txr.feeSatPerKB,
+				txr.coinSelectionStrategy, txr.dryRun,
+			)
+
+			release()
 			txr.resp <- createTxResponse{tx, err}
 		case <-quit:
 			break out
@@ -1174,26 +1202,33 @@ out:
 	w.wg.Done()
 }
 
-// CreateSimpleTx creates a new signed transaction spending unspent P2PKH
-// outputs with at least minconf confirmations spending to any number of
-// address/amount pairs.  Change and an appropriate transaction fee are
-// automatically included, if necessary.  All transaction creation through this
-// function is serialized to prevent the creation of many transactions which
-// spend the same outputs.
+// CreateSimpleTx creates a new signed transaction spending unspent outputs with
+// at least minconf confirmations spending to any number of address/amount
+// pairs. Only unspent outputs belonging to the given key scope and account will
+// be selected, unless a key scope is not specified. In that case, inputs from all
+// accounts may be selected, no matter what key scope they belong to. This is
+// done to handle the default account case, where a user wants to fund a PSBT
+// with inputs regardless of their type (NP2WKH, P2WKH, etc.). Change and an
+// appropriate transaction fee are automatically included, if necessary. All
+// transaction creation through this function is serialized to prevent the
+// creation of many transactions which spend the same outputs.
 //
 // NOTE: The dryRun argument can be set true to create a tx that doesn't alter
 // the database. A tx created with this set to true SHOULD NOT be broadcasted.
-func (w *Wallet) CreateSimpleTx(account uint32, outputs []*wire.TxOut,
-	minconf int32, satPerKb ltcutil.Amount, dryRun bool) (
+func (w *Wallet) CreateSimpleTx(keyScope *waddrmgr.KeyScope, account uint32,
+	outputs []*wire.TxOut, minconf int32, satPerKb ltcutil.Amount,
+	coinSelectionStrategy CoinSelectionStrategy, dryRun bool) (
 	*txauthor.AuthoredTx, error) {
 
 	req := createTxRequest{
-		account:     account,
-		outputs:     outputs,
-		minconf:     minconf,
-		feeSatPerKB: satPerKb,
-		dryRun:      dryRun,
-		resp:        make(chan createTxResponse),
+		keyScope:              keyScope,
+		account:               account,
+		outputs:               outputs,
+		minconf:               minconf,
+		feeSatPerKB:           satPerKb,
+		coinSelectionStrategy: coinSelectionStrategy,
+		dryRun:                dryRun,
+		resp:                  make(chan createTxResponse),
 	}
 	w.createTxRequests <- req
 	resp := <-req.resp
@@ -1221,7 +1256,7 @@ type (
 
 	// heldUnlock is a tool to prevent the wallet from automatically
 	// locking after some timeout before an operation which needed
-	// the unlocked wallet has finished.  Any aquired heldUnlock
+	// the unlocked wallet has finished.  Any acquired heldUnlock
 	// *must* be released (preferably with a defer) or the wallet
 	// will forever remain unlocked.
 	heldUnlock chan struct{}
@@ -1421,25 +1456,6 @@ func (w *Wallet) ChangePassphrases(publicOld, publicNew, privateOld,
 		err:        err,
 	}
 	return <-err
-}
-
-// accountUsed returns whether there are any recorded transactions spending to
-// a given account. It returns true if atleast one address in the account was
-// used and false if no address in the account was used.
-func (w *Wallet) accountUsed(addrmgrNs walletdb.ReadWriteBucket, account uint32) (bool, error) {
-	var used bool
-	err := w.Manager.ForEachAccountAddress(addrmgrNs, account,
-		func(maddr waddrmgr.ManagedAddress) error {
-			used = maddr.Used(addrmgrNs)
-			if used {
-				return waddrmgr.Break
-			}
-			return nil
-		})
-	if err == waddrmgr.Break {
-		err = nil
-	}
-	return used, err
 }
 
 // AccountAddresses returns the addresses for every created address for an
@@ -1777,6 +1793,46 @@ func (w *Wallet) AccountProperties(scope waddrmgr.KeyScope, acct uint32) (*waddr
 	return props, err
 }
 
+// AccountPropertiesByName returns the properties of an account by its name. It
+// first fetches the desynced information from the address manager, then updates
+// the indexes based on the address pools.
+func (w *Wallet) AccountPropertiesByName(scope waddrmgr.KeyScope,
+	name string) (*waddrmgr.AccountProperties, error) {
+
+	manager, err := w.Manager.FetchScopedKeyManager(scope)
+	if err != nil {
+		return nil, err
+	}
+
+	var props *waddrmgr.AccountProperties
+	err = walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		waddrmgrNs := tx.ReadBucket(waddrmgrNamespaceKey)
+		acct, err := manager.LookupAccount(waddrmgrNs, name)
+		if err != nil {
+			return err
+		}
+		props, err = manager.AccountProperties(waddrmgrNs, acct)
+		return err
+	})
+	return props, err
+}
+
+// LookupAccount returns the corresponding key scope and account number for the
+// account with the given name.
+func (w *Wallet) LookupAccount(name string) (waddrmgr.KeyScope, uint32, error) {
+	var (
+		keyScope waddrmgr.KeyScope
+		account  uint32
+	)
+	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		ns := tx.ReadBucket(waddrmgrNamespaceKey)
+		var err error
+		keyScope, account, err = w.Manager.LookupAccount(ns, name)
+		return err
+	})
+	return keyScope, account, err
+}
+
 // RenameAccount sets the name for an account number to newName.
 func (w *Wallet) RenameAccount(scope waddrmgr.KeyScope, account uint32, newName string) error {
 	manager, err := w.Manager.FetchScopedKeyManager(scope)
@@ -1799,8 +1855,6 @@ func (w *Wallet) RenameAccount(scope waddrmgr.KeyScope, account uint32, newName 
 	}
 	return err
 }
-
-const maxEmptyAccounts = 100
 
 // NextAccount creates the next account and returns its account number.  The
 // name must be unique to the account.  In order to support automatic seed
@@ -2022,8 +2076,12 @@ func (w *Wallet) ListSinceBlock(start, end, syncHeight int32) ([]btcjson.ListTra
 
 		rangeFn := func(details []wtxmgr.TxDetails) (bool, error) {
 			for _, detail := range details {
-				jsonResults := listTransactions(tx, &detail,
-					w.Manager, syncHeight, w.chainParams)
+				detail := detail
+
+				jsonResults := listTransactions(
+					tx, &detail, w.Manager, syncHeight,
+					w.chainParams,
+				)
 				txList = append(txList, jsonResults...)
 			}
 			return false, nil
@@ -2121,9 +2179,6 @@ func (w *Wallet) ListAddressTransactions(pkHashes map[string]struct{}) ([]btcjso
 
 					jsonResults := listTransactions(tx, detail,
 						w.Manager, syncBlock.Height, w.chainParams)
-					if err != nil {
-						return false, err
-					}
 					txList = append(txList, jsonResults...)
 					continue loopDetails
 				}
@@ -2202,7 +2257,9 @@ type GetTransactionsResult struct {
 // Transaction results are organized by blocks in ascending order and unmined
 // transactions in an unspecified order.  Mined transactions are saved in a
 // Block structure which records properties about the block.
-func (w *Wallet) GetTransactions(startBlock, endBlock *BlockIdentifier, cancel <-chan struct{}) (*GetTransactionsResult, error) {
+func (w *Wallet) GetTransactions(startBlock, endBlock *BlockIdentifier,
+	accountName string, cancel <-chan struct{}) (*GetTransactionsResult, error) {
+
 	var start, end int32 = 0, -1
 
 	w.chainClientLock.Lock()
@@ -2524,7 +2581,7 @@ func (s creditSlice) Swap(i, j int) {
 // contained within it will be considered.  If we know nothing about a
 // transaction an empty array will be returned.
 func (w *Wallet) ListUnspent(minconf, maxconf int32,
-	addresses map[string]struct{}) ([]*btcjson.ListUnspentResult, error) {
+	accountName string) ([]*btcjson.ListUnspentResult, error) {
 
 	var results []*btcjson.ListUnspentResult
 	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
@@ -2533,7 +2590,7 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 
 		syncBlock := w.Manager.SyncedTo()
 
-		filter := len(addresses) != 0
+		filter := accountName != ""
 		unspent, err := w.TxStore.UnspentOutputs(txmgrNs)
 		if err != nil {
 			return err
@@ -2572,7 +2629,7 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 			//
 			// This will be unnecessary once transactions and outputs are
 			// grouped under the associated account in the db.
-			acctName := defaultAccountName
+			outputAcctName := defaultAccountName
 			sc, addrs, _, err := txscript.ExtractPkScriptAddrs(
 				output.PkScript, w.chainParams)
 			if err != nil {
@@ -2583,22 +2640,15 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 				if err == nil {
 					s, err := smgr.AccountName(addrmgrNs, acct)
 					if err == nil {
-						acctName = s
+						outputAcctName = s
 					}
 				}
 			}
 
-			if filter {
-				for _, addr := range addrs {
-					_, ok := addresses[addr.EncodeAddress()]
-					if ok {
-						goto include
-					}
-				}
+			if filter && outputAcctName != accountName {
 				continue
 			}
 
-		include:
 			// At the moment watch-only addresses are not supported, so all
 			// recorded outputs that are not multisig are "spendable".
 			// Multisig outputs are only "spendable" if all keys are
@@ -2638,7 +2688,7 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 			result := &btcjson.ListUnspentResult{
 				TxID:          output.OutPoint.Hash.String(),
 				Vout:          output.OutPoint.Index,
-				Account:       acctName,
+				Account:       outputAcctName,
 				ScriptPubKey:  hex.EncodeToString(output.PkScript),
 				Amount:        output.Amount.ToBTC(),
 				Confirmations: int64(confs),
@@ -2657,6 +2707,19 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 		return nil
 	})
 	return results, err
+}
+
+// ListLeasedOutputs returns a list of objects representing the currently locked
+// utxos.
+func (w *Wallet) ListLeasedOutputs() ([]*wtxmgr.LockedOutput, error) {
+	var outputs []*wtxmgr.LockedOutput
+	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		ns := tx.ReadBucket(wtxmgrNamespaceKey)
+		var err error
+		outputs, err = w.TxStore.ListLockedOutputs(ns)
+		return err
+	})
+	return outputs, err
 }
 
 // DumpPrivKeys returns the WIF-encoded private keys for all addresses with
@@ -2718,110 +2781,6 @@ func (w *Wallet) DumpWIFPrivateKey(addr ltcutil.Address) (string, error) {
 		return "", err
 	}
 	return wif.String(), nil
-}
-
-// ImportPrivateKey imports a private key to the wallet and writes the new
-// wallet to disk.
-//
-// NOTE: If a block stamp is not provided, then the wallet's birthday will be
-// set to the genesis block of the corresponding chain.
-func (w *Wallet) ImportPrivateKey(scope waddrmgr.KeyScope, wif *ltcutil.WIF,
-	bs *waddrmgr.BlockStamp, rescan bool) (string, error) {
-
-	manager, err := w.Manager.FetchScopedKeyManager(scope)
-	if err != nil {
-		return "", err
-	}
-
-	// The starting block for the key is the genesis block unless otherwise
-	// specified.
-	if bs == nil {
-		bs = &waddrmgr.BlockStamp{
-			Hash:      *w.chainParams.GenesisHash,
-			Height:    0,
-			Timestamp: w.chainParams.GenesisBlock.Header.Timestamp,
-		}
-	} else if bs.Timestamp.IsZero() {
-		// Only update the new birthday time from default value if we
-		// actually have timestamp info in the header.
-		header, err := w.chainClient.GetBlockHeader(&bs.Hash)
-		if err == nil {
-			bs.Timestamp = header.Timestamp
-		}
-	}
-
-	// Attempt to import private key into wallet.
-	var addr ltcutil.Address
-	var props *waddrmgr.AccountProperties
-	err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
-		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
-		maddr, err := manager.ImportPrivateKey(addrmgrNs, wif, bs)
-		if err != nil {
-			return err
-		}
-		addr = maddr.Address()
-		props, err = manager.AccountProperties(
-			addrmgrNs, waddrmgr.ImportedAddrAccount,
-		)
-		if err != nil {
-			return err
-		}
-
-		// We'll only update our birthday with the new one if it is
-		// before our current one. Otherwise, if we do, we can
-		// potentially miss detecting relevant chain events that
-		// occurred between them while rescanning.
-		birthdayBlock, _, err := w.Manager.BirthdayBlock(addrmgrNs)
-		if err != nil {
-			return err
-		}
-		if bs.Height >= birthdayBlock.Height {
-			return nil
-		}
-
-		err = w.Manager.SetBirthday(addrmgrNs, bs.Timestamp)
-		if err != nil {
-			return err
-		}
-
-		// To ensure this birthday block is correct, we'll mark it as
-		// unverified to prompt a sanity check at the next restart to
-		// ensure it is correct as it was provided by the caller.
-		return w.Manager.SetBirthdayBlock(addrmgrNs, *bs, false)
-	})
-	if err != nil {
-		return "", err
-	}
-
-	// Rescan blockchain for transactions with txout scripts paying to the
-	// imported address.
-	if rescan {
-		job := &RescanJob{
-			Addrs:      []ltcutil.Address{addr},
-			OutPoints:  nil,
-			BlockStamp: *bs,
-		}
-
-		// Submit rescan job and log when the import has completed.
-		// Do not block on finishing the rescan.  The rescan success
-		// or failure is logged elsewhere, and the channel is not
-		// required to be read, so discard the return value.
-		_ = w.SubmitRescan(job)
-	} else {
-		err := w.chainClient.NotifyReceived([]ltcutil.Address{addr})
-		if err != nil {
-			return "", fmt.Errorf("Failed to subscribe for address ntfns for "+
-				"address %s: %s", addr.EncodeAddress(), err)
-		}
-	}
-
-	addrStr := addr.EncodeAddress()
-	log.Infof("Imported payment address %s", addrStr)
-
-	w.NtfnServer.notifyAccountProperties(props)
-
-	// Return the payment address string of the imported private key.
-	return addrStr, nil
 }
 
 // LockedOutpoint returns whether an outpoint has been marked as locked and
@@ -2895,12 +2854,14 @@ func (w *Wallet) LockedOutpoints() []btcjson.TransactionInput {
 //
 // NOTE: This differs from LockOutpoint in that outputs are locked for a limited
 // amount of time and their locks are persisted to disk.
-func (w *Wallet) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint) (time.Time, error) {
+func (w *Wallet) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint,
+	duration time.Duration) (time.Time, error) {
+
 	var expiry time.Time
 	err := walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
 		ns := tx.ReadWriteBucket(wtxmgrNamespaceKey)
 		var err error
-		expiry, err = w.TxStore.LockOutput(ns, id, op)
+		expiry, err = w.TxStore.LockOutput(ns, id, op, duration)
 		return err
 	})
 	return expiry, err
@@ -2961,7 +2922,7 @@ func (w *Wallet) SortedActivePaymentAddresses() ([]string, error) {
 		return nil, err
 	}
 
-	sort.Sort(sort.StringSlice(addrStrs))
+	sort.Strings(addrStrs)
 	return addrStrs, nil
 }
 
@@ -3217,10 +3178,17 @@ func (w *Wallet) TotalReceivedForAddr(addr ltcutil.Address, minConf int32) (ltcu
 	return amount, err
 }
 
-// SendOutputs creates and sends payment transactions. It returns the
-// transaction upon success.
-func (w *Wallet) SendOutputs(outputs []*wire.TxOut, account uint32,
-	minconf int32, satPerKb ltcutil.Amount, label string) (*wire.MsgTx, error) {
+// SendOutputs creates and sends payment transactions. Coin selection is
+// performed by the wallet, choosing inputs that belong to the given key scope
+// and account, unless a key scope is not specified. In that case, inputs from
+// accounts matching the account number provided across all key scopes may be
+// selected. This is done to handle the default account case, where a user wants
+// to fund a PSBT with inputs regardless of their type (NP2WKH, P2WKH, etc.). It
+// returns the transaction upon success.
+func (w *Wallet) SendOutputs(outputs []*wire.TxOut, keyScope *waddrmgr.KeyScope,
+	account uint32, minconf int32, satPerKb ltcutil.Amount,
+	coinSelectionStrategy CoinSelectionStrategy, label string) (
+	*wire.MsgTx, error) {
 
 	// Ensure the outputs to be created adhere to the network's consensus
 	// rules.
@@ -3238,10 +3206,18 @@ func (w *Wallet) SendOutputs(outputs []*wire.TxOut, account uint32,
 	// continue to re-broadcast the transaction upon restarts until it has
 	// been confirmed.
 	createdTx, err := w.CreateSimpleTx(
-		account, outputs, minconf, satPerKb, false,
+		keyScope, account, outputs, minconf, satPerKb,
+		coinSelectionStrategy, false,
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	// If our wallet is read-only, we'll get a transaction with coins
+	// selected but no witness data. In such a case we need to inform our
+	// caller that they'll actually need to go ahead and sign the TX.
+	if w.Manager.WatchOnly() {
+		return createdTx.Tx, ErrTxUnsigned
 	}
 
 	txHash, err := w.reliablyPublishTransaction(createdTx.Tx, label)
@@ -3463,7 +3439,35 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 	if err != nil {
 		return nil, err
 	}
+
+	// Along the way, we'll extract our relevant destination addresses from
+	// the transaction.
+	var ourAddrs []ltcutil.Address
 	err = walletdb.Update(w.db, func(dbTx walletdb.ReadWriteTx) error {
+		addrmgrNs := dbTx.ReadWriteBucket(waddrmgrNamespaceKey)
+		for _, txOut := range tx.TxOut {
+			_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+				txOut.PkScript, w.chainParams,
+			)
+			if err != nil {
+				// Non-standard outputs can safely be skipped because
+				// they're not supported by the wallet.
+				continue
+			}
+			for _, addr := range addrs {
+				// Skip any addresses which are not relevant to
+				// us.
+				_, err := w.Manager.Address(addrmgrNs, addr)
+				if waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				ourAddrs = append(ourAddrs, addr)
+			}
+		}
+
 		if err := w.addRelevantTx(dbTx, txRec, nil); err != nil {
 			return err
 		}
@@ -3485,27 +3489,8 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 	// We'll also ask to be notified of the transaction once it confirms
 	// on-chain. This is done outside of the database transaction to prevent
 	// backend interaction within it.
-	//
-	// NOTE: In some cases, it's possible that the transaction to be
-	// broadcast is not directly relevant to the user's wallet, e.g.,
-	// multisig. In either case, we'll still ask to be notified of when it
-	// confirms to maintain consistency.
-	//
-	// TODO(wilmer): import script as external if the address does not
-	// belong to the wallet to handle confs during restarts?
-	for _, txOut := range tx.TxOut {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
-			txOut.PkScript, w.chainParams,
-		)
-		if err != nil {
-			// Non-standard outputs can safely be skipped because
-			// they're not supported by the wallet.
-			continue
-		}
-
-		if err := chainClient.NotifyReceived(addrs); err != nil {
-			return nil, err
-		}
+	if err := chainClient.NotifyReceived(ourAddrs); err != nil {
+		return nil, err
 	}
 
 	return w.publishTransaction(tx)
@@ -3552,7 +3537,7 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 	//
 	// This error is returned when broadcasting/sending a transaction to a
 	// btcd node that already has it in their mempool.
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L953
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L953
 	case match(err, "already have transaction"):
 		fallthrough
 
@@ -3569,14 +3554,14 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 	//
 	// This error is returned when sending a transaction that has already
 	// confirmed to a btcd/bitcoind node over RPC.
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/rpcserver.go#L3355
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/rpcserver.go#L3355
 	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/node/transaction.cpp#L36
 	case rpcTxConfirmed:
 		fallthrough
 
 	// This error is returned when broadcasting a transaction that has
 	// already confirmed to a btcd node over the P2P network.
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1036
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1036
 	case match(err, "transaction already exists"):
 		fallthrough
 
@@ -3606,20 +3591,20 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 	// This error is returned from btcd when there is already a transaction
 	// not signaling replacement in the mempool that spends one of the
 	// referenced outputs.
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L591
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L591
 	case match(err, "already spent"):
 		fallthrough
 
 	// This error is returned from btcd when a referenced output cannot be
 	// found, meaning it etiher has been spent or doesn't exist.
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/blockchain/chain.go#L405
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/blockchain/chain.go#L405
 	case match(err, "already been spent"):
 		fallthrough
 
 	// This error is returned from btcd when a transaction is spending
 	// either output that is missing or already spent, and orphans aren't
 	// allowed.
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1409
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1409
 	case match(err, "orphan transaction"):
 		fallthrough
 
@@ -3669,11 +3654,11 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 
 	// Returned by btcd when replacement transaction was rejected for
 	// whatever reason.
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L841
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L854
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L875
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L896
-	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L913
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L841
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L854
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L875
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L896
+	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L913
 	case match(err, "replacement transaction"):
 		returnErr = &ErrReplacement{
 			backendError: err,
@@ -3720,48 +3705,81 @@ func (w *Wallet) Database() walletdb.DB {
 	return w.db
 }
 
-// Create creates an new wallet, writing it to an empty database.  If the passed
-// seed is non-nil, it is used.  Otherwise, a secure random seed of the
-// recommended length is generated.
-func Create(db walletdb.DB, pubPass, privPass, seed []byte,
-	params *chaincfg.Params, birthday time.Time) error {
+// CreateWithCallback is the same as Create with an added callback that will be
+// called in the same transaction the wallet structure is initialized.
+func CreateWithCallback(db walletdb.DB, pubPass, privPass []byte,
+	rootKey *hdkeychain.ExtendedKey, params *chaincfg.Params,
+	birthday time.Time, cb func(walletdb.ReadWriteTx) error) error {
 
 	return create(
-		db, pubPass, privPass, seed, params, birthday, false,
+		db, pubPass, privPass, rootKey, params, birthday, false, cb,
+	)
+}
+
+// CreateWatchingOnlyWithCallback is the same as CreateWatchingOnly with an
+// added callback that will be called in the same transaction the wallet
+// structure is initialized.
+func CreateWatchingOnlyWithCallback(db walletdb.DB, pubPass []byte,
+	params *chaincfg.Params, birthday time.Time,
+	cb func(walletdb.ReadWriteTx) error) error {
+
+	return create(
+		db, pubPass, nil, nil, params, birthday, true, cb,
+	)
+}
+
+// Create creates an new wallet, writing it to an empty database.  If the passed
+// root key is non-nil, it is used.  Otherwise, a secure random seed of the
+// recommended length is generated.
+func Create(db walletdb.DB, pubPass, privPass []byte,
+	rootKey *hdkeychain.ExtendedKey, params *chaincfg.Params,
+	birthday time.Time) error {
+
+	return create(
+		db, pubPass, privPass, rootKey, params, birthday, false, nil,
 	)
 }
 
 // CreateWatchingOnly creates an new watch-only wallet, writing it to
-// an empty database. No seed can be provided as this wallet will be
+// an empty database. No root key can be provided as this wallet will be
 // watching only.  Likewise no private passphrase may be provided
 // either.
 func CreateWatchingOnly(db walletdb.DB, pubPass []byte,
 	params *chaincfg.Params, birthday time.Time) error {
 
 	return create(
-		db, pubPass, nil, nil, params, birthday, true,
+		db, pubPass, nil, nil, params, birthday, true, nil,
 	)
 }
 
-func create(db walletdb.DB, pubPass, privPass, seed []byte,
-	params *chaincfg.Params, birthday time.Time, isWatchingOnly bool) error {
+func create(db walletdb.DB, pubPass, privPass []byte,
+	rootKey *hdkeychain.ExtendedKey, params *chaincfg.Params,
+	birthday time.Time, isWatchingOnly bool,
+	cb func(walletdb.ReadWriteTx) error) error {
 
-	if !isWatchingOnly {
-		// If a seed was provided, ensure that it is of valid length. Otherwise,
-		// we generate a random seed for the wallet with the recommended seed
-		// length.
-		if seed == nil {
-			hdSeed, err := hdkeychain.GenerateSeed(
-				hdkeychain.RecommendedSeedLen)
-			if err != nil {
-				return err
-			}
-			seed = hdSeed
+	// If no root key was provided, we create one now from a random seed.
+	// But only if this is not a watching-only wallet where the accounts are
+	// created individually from their xpubs.
+	if !isWatchingOnly && rootKey == nil {
+		hdSeed, err := hdkeychain.GenerateSeed(
+			hdkeychain.RecommendedSeedLen,
+		)
+		if err != nil {
+			return err
 		}
-		if len(seed) < hdkeychain.MinSeedBytes ||
-			len(seed) > hdkeychain.MaxSeedBytes {
-			return hdkeychain.ErrInvalidSeedLen
+
+		// Derive the master extended key from the seed.
+		rootKey, err = hdkeychain.NewMaster(hdSeed, params)
+		if err != nil {
+			return fmt.Errorf("failed to derive master extended " +
+				"key")
 		}
+	}
+
+	// We need a private key if this isn't a watching only wallet.
+	if !isWatchingOnly && rootKey != nil && !rootKey.IsPrivate() {
+		return fmt.Errorf("need extended private key for wallet that " +
+			"is not watching only")
 	}
 
 	return walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
@@ -3775,12 +3793,23 @@ func create(db walletdb.DB, pubPass, privPass, seed []byte,
 		}
 
 		err = waddrmgr.Create(
-			addrmgrNs, seed, pubPass, privPass, params, nil, birthday,
+			addrmgrNs, rootKey, pubPass, privPass, params, nil,
+			birthday,
 		)
 		if err != nil {
 			return err
 		}
-		return wtxmgr.Create(txmgrNs)
+
+		err = wtxmgr.Create(txmgrNs)
+		if err != nil {
+			return err
+		}
+
+		if cb != nil {
+			return cb(tx)
+		}
+
+		return nil
 	})
 }
 

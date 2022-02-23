@@ -36,7 +36,7 @@ func (w *Wallet) handleChainNotifications() {
 
 	catchUpHashes := func(w *Wallet, client chain.Interface,
 		height int32) error {
-		// TODO(aakselrod): There's a race conditon here, which
+		// TODO(aakselrod): There's a race condition here, which
 		// happens when a reorg occurs between the
 		// rescanProgress notification and the last GetBlockHash
 		// call. The solution when using ltcd is to make ltcd
@@ -107,14 +107,14 @@ func (w *Wallet) handleChainNotifications() {
 					chainClient, birthdayStore,
 				)
 				if err != nil && !waddrmgr.IsError(err, waddrmgr.ErrBirthdayBlockNotSet) {
-					panic(fmt.Errorf("Unable to sanity "+
+					panic(fmt.Errorf("unable to sanity "+
 						"check wallet birthday block: %v",
 						err))
 				}
 
 				err = w.syncWithChain(birthdayBlock)
 				if err != nil && !w.ShuttingDown() {
-					panic(fmt.Errorf("Unable to synchronize "+
+					panic(fmt.Errorf("unable to synchronize "+
 						"wallet to chain: %v", err))
 				}
 			case chain.BlockConnected:
@@ -280,9 +280,17 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord, 
 	// relevant.  This assumption will not hold true when SPV support is
 	// added, but until then, simply insert the transaction because there
 	// should either be one or more relevant inputs or outputs.
-	err := w.TxStore.InsertTx(txmgrNs, rec, block)
+	exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, block)
 	if err != nil {
 		return err
+	}
+
+	// If the transaction has already been recorded, we can return early.
+	// Note: Returning here is safe as we're within the context of an atomic
+	// database transaction, so we don't need to worry about the MarkUsed
+	// calls below.
+	if exists {
+		return nil
 	}
 
 	// Check every output to determine whether it is controlled by a wallet

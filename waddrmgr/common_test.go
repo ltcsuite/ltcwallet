@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 )
@@ -25,6 +26,8 @@ var (
 		0xbe, 0x8b, 0x56, 0xc8, 0x83, 0x77, 0x95, 0x59, 0x8b,
 		0xb6, 0xc4, 0x40, 0xc0, 0x64,
 	}
+
+	rootKey, _ = hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
 
 	pubPassphrase   = []byte("_DJr{fL4H0O}*-0\n:V1izc)(6BomK")
 	privPassphrase  = []byte("81lUHXnOMZ@?XXd7O9xyDIWIbXX-lj")
@@ -51,9 +54,10 @@ var (
 			privKey:     hexToBytes("c27d6581b92785834b381fa697c4b0ffc4574b495743722e0acb7601b1b68b99"),
 			privKeyWIF:  "T9a3GiNEnz5x7N6EaQGzjwQV8Ae31QbN5yb3PLdDqZfb9bfE6SyP",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  0,
-				Index:   0,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           0,
 			},
 		},
 		{
@@ -66,9 +70,10 @@ var (
 			privKey:     hexToBytes("18f3b191019e83878a81557abebb2afda199e31d22e150d8bf4df4561671be6c"),
 			privKeyWIF:  "T3tUpTvBYt7UWCtEbYLhcaerVdrA3Kq1iz7BVZHZupfdmiGLocoq",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  0,
-				Index:   1,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           1,
 			},
 		},
 		{
@@ -81,9 +86,10 @@ var (
 			privKey:     hexToBytes("ccb8f6305b73136b363644b647f6efc0fd27b6b7d9c11c7e560662ed38db7b34"),
 			privKeyWIF:  "T9uvwzPj2V1hS4SaSp5z9HxoHV3iNw4T68W4cYnTAgdH6GTohbqf",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  0,
-				Index:   2,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           2,
 			},
 		},
 		{
@@ -96,9 +102,10 @@ var (
 			privKey:     hexToBytes("d6bc8ff768814fede2adcdb74826bd846924341b3862e3b6e31cdc084e992940"),
 			privKeyWIF:  "TAFPyjFipMN3bJabga5y6hfUWxNMUFAdQdHyuDnenTdf2dcQM4G7",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  0,
-				Index:   3,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           3,
 			},
 		},
 		{
@@ -111,9 +118,10 @@ var (
 			privKey:     hexToBytes("8563ade061110e03aee50695ffc5cb1c06c8310bde0a3674257c853c966968c0"),
 			privKeyWIF:  "T7XGY3CyNBkYhttjNcMFF4o9TEKaBZ2nrnr4xJFbS15SB1T6Na4A",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  0,
-				Index:   4,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           4,
 			},
 		},
 		{
@@ -126,9 +134,10 @@ var (
 			privKey:     hexToBytes("fe4f855fcf059ec6ddf7b25f63b19aa49c771d1fcb9850b68ae3d65e20657a60"),
 			privKeyWIF:  "TBaKjUE1wJnJj1zhTa9uM524exYy1kgqNzsPsN16EKDJwQpH1dY4",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  1,
-				Index:   0,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          1,
+				Index:           0,
 			},
 		},
 		{
@@ -141,9 +150,10 @@ var (
 			privKey:     hexToBytes("bfef521317c65b018ae7e6d7ecc3aa700d5d0f7ea84d567be9270382d0b5e3e6"),
 			privKeyWIF:  "T9V5DDsvBqBwpEEzp6zz4C4rCkr3zurRvaSd1ZubWyjRF7Eh5tdc",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  1,
-				Index:   1,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          1,
+				Index:           1,
 			},
 		},
 		{
@@ -156,9 +166,10 @@ var (
 			privKey:     hexToBytes("f506dffd4494c24006df7a35f3291f7ca0297a1a431557a1339bfed6f48738ca"),
 			privKeyWIF:  "TBGH3EheoDPBnHXzaJHffBKe9bFhjiBJ3DiZpK4MPGcM9RvA8st4",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  1,
-				Index:   2,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          1,
+				Index:           2,
 			},
 		},
 		{
@@ -171,9 +182,10 @@ var (
 			privKey:     hexToBytes("b3629de8ef6a275b4ffae41aa2bbbc2952eb92282ea6402435abbb010ecc1fb8"),
 			privKeyWIF:  "T94gK1wRCMWN6RYpchZ8GZx29J3XzMvp47sJMqWQdeq5GziH148W",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  1,
-				Index:   3,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          1,
+				Index:           3,
 			},
 		},
 		{
@@ -186,9 +198,10 @@ var (
 			privKey:     hexToBytes("ca747a7ef815ea0dbe68655272cecbfbd65f2a109019a9ed28e0d3dcaffe05c3"),
 			privKeyWIF:  "T9qXJKuHUoNCE4yCYZx6UYaD9cHEioWob2g8qKhB9979V5ybp7kT",
 			derivationInfo: DerivationPath{
-				Account: 0,
-				Branch:  1,
-				Index:   4,
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          1,
+				Index:           4,
 			},
 		},
 	}
@@ -200,6 +213,10 @@ var (
 	// expectedInternalAddrs is the list of expected internal addresses
 	// generated from the seed
 	expectedInternalAddrs = expectedAddrs[5:]
+
+	// defaultDBTimeout specifies the timeout value when opening the wallet
+	// database.
+	defaultDBTimeout = 10 * time.Second
 )
 
 // checkManagerError ensures the passed error is a ManagerError with an error
@@ -238,7 +255,7 @@ func emptyDB(t *testing.T) (tearDownFunc func(), db walletdb.DB) {
 		t.Fatalf("Failed to create db temp dir: %v", err)
 	}
 	dbPath := filepath.Join(dirName, "mgrtest.db")
-	db, err = walletdb.Create("bdb", dbPath, true)
+	db, err = walletdb.Create("bdb", dbPath, true, defaultDBTimeout)
 	if err != nil {
 		_ = os.RemoveAll(dirName)
 		t.Fatalf("createDbNamespace: unexpected error: %v", err)
@@ -259,7 +276,7 @@ func setupManager(t *testing.T) (tearDownFunc func(), db walletdb.DB, mgr *Manag
 		t.Fatalf("Failed to create db temp dir: %v", err)
 	}
 	dbPath := filepath.Join(dirName, "mgrtest.db")
-	db, err = walletdb.Create("bdb", dbPath, true)
+	db, err = walletdb.Create("bdb", dbPath, true, defaultDBTimeout)
 	if err != nil {
 		_ = os.RemoveAll(dirName)
 		t.Fatalf("createDbNamespace: unexpected error: %v", err)
@@ -270,7 +287,7 @@ func setupManager(t *testing.T) (tearDownFunc func(), db walletdb.DB, mgr *Manag
 			return err
 		}
 		err = Create(
-			ns, seed, pubPassphrase, privPassphrase,
+			ns, rootKey, pubPassphrase, privPassphrase,
 			&chaincfg.MainNetParams, fastScrypt, time.Time{},
 		)
 		if err != nil {

@@ -93,7 +93,7 @@ func (m *MigrationManager) SetVersion(ns walletdb.ReadWriteBucket,
 	if ns == nil {
 		ns = m.ns
 	}
-	return putManagerVersion(m.ns, version)
+	return putManagerVersion(ns, version)
 }
 
 // Versions returns all of the available database versions of the service.
@@ -321,6 +321,10 @@ func populateBirthdayBlock(ns walletdb.ReadWriteBucket) error {
 	case *chaincfg.SimNetParams.GenesisHash:
 		genesisTimestamp =
 			chaincfg.SimNetParams.GenesisBlock.Header.Timestamp
+
+	case *chaincfg.SigNetParams.GenesisHash:
+		genesisTimestamp =
+			chaincfg.SigNetParams.GenesisBlock.Header.Timestamp
 
 	default:
 		return fmt.Errorf("unknown genesis hash %v", genesisHash)

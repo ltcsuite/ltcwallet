@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -16,7 +17,8 @@ import (
 	"time"
 
 	flags "github.com/jessevdk/go-flags"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcwallet/internal/cfgutil"
 	"github.com/ltcsuite/ltcwallet/internal/legacy/keystore"
 	"github.com/ltcsuite/ltcwallet/netparams"
@@ -32,8 +34,6 @@ const (
 	defaultLogFilename      = "ltcwallet.log"
 	defaultRPCMaxClients    = 10
 	defaultRPCMaxWebsockets = 25
-
-	walletDbName = "wallet.db"
 )
 
 var (
@@ -47,27 +47,31 @@ var (
 
 type config struct {
 	// General application behavior
-	ConfigFile    *cfgutil.ExplicitString `short:"C" long:"configfile" description:"Path to configuration file"`
-	ShowVersion   bool                    `short:"V" long:"version" description:"Display version information and exit"`
-	Create        bool                    `long:"create" description:"Create the wallet if it does not exist"`
-	CreateTemp    bool                    `long:"createtemp" description:"Create a temporary simulation wallet (pass=password) in the data directory indicated; must call with --datadir"`
-	AppDataDir    *cfgutil.ExplicitString `short:"A" long:"appdata" description:"Application data directory for wallet config, databases and logs"`
-	TestNet4      bool                    `long:"testnet" description:"Use the test Litecoin network (version 4) (default mainnet)"`
-	SimNet        bool                    `long:"simnet" description:"Use the simulation test network (default mainnet)"`
-	NoInitialLoad bool                    `long:"noinitialload" description:"Defer wallet creation/opening on startup and enable loading wallets over RPC"`
-	DebugLevel    string                  `short:"d" long:"debuglevel" description:"Logging level {trace, debug, info, warn, error, critical}"`
-	LogDir        string                  `long:"logdir" description:"Directory to log output."`
-	Profile       string                  `long:"profile" description:"Enable HTTP profiling on given port -- NOTE port must be between 1024 and 65536"`
+	ConfigFile      *cfgutil.ExplicitString `short:"C" long:"configfile" description:"Path to configuration file"`
+	ShowVersion     bool                    `short:"V" long:"version" description:"Display version information and exit"`
+	Create          bool                    `long:"create" description:"Create the wallet if it does not exist"`
+	CreateTemp      bool                    `long:"createtemp" description:"Create a temporary simulation wallet (pass=password) in the data directory indicated; must call with --datadir"`
+	AppDataDir      *cfgutil.ExplicitString `short:"A" long:"appdata" description:"Application data directory for wallet config, databases and logs"`
+	TestNet4        bool                    `long:"testnet" description:"Use the test Litecoin network (version 4) (default mainnet)"`
+	SimNet          bool                    `long:"simnet" description:"Use the simulation test network (default mainnet)"`
+	SigNet          bool                    `long:"signet" description:"Use the signet test network (default mainnet)"`
+	SigNetChallenge string                  `long:"signetchallenge" description:"Connect to a custom signet network defined by this challenge instead of using the global default signet test network -- Can be specified multiple times"`
+	SigNetSeedNode  []string                `long:"signetseednode" description:"Specify a seed node for the signet network instead of using the global default signet network seed nodes"`
+	NoInitialLoad   bool                    `long:"noinitialload" description:"Defer wallet creation/opening on startup and enable loading wallets over RPC"`
+	DebugLevel      string                  `short:"d" long:"debuglevel" description:"Logging level {trace, debug, info, warn, error, critical}"`
+	LogDir          string                  `long:"logdir" description:"Directory to log output."`
+	Profile         string                  `long:"profile" description:"Enable HTTP profiling on given port -- NOTE port must be between 1024 and 65536"`
+	DBTimeout       time.Duration           `long:"dbtimeout" description:"The timeout value to use when opening the wallet database."`
 
 	// Wallet options
 	WalletPass string `long:"walletpass" default-mask:"-" description:"The public wallet password -- Only required if the wallet was created with one"`
 
 	// RPC client options
-	RPCConnect       string                  `short:"c" long:"rpcconnect" description:"Hostname/IP and port of btcd RPC server to connect to (default localhost:8334, testnet: localhost:18334, simnet: localhost:18556)"`
-	CAFile           *cfgutil.ExplicitString `long:"cafile" description:"File containing root certificates to authenticate a TLS connections with btcd"`
+	RPCConnect       string                  `short:"c" long:"rpcconnect" description:"Hostname/IP and port of ltcd RPC server to connect to (default localhost:9334, testnet: localhost:19334, simnet: localhost:18556)"`
+	CAFile           *cfgutil.ExplicitString `long:"cafile" description:"File containing root certificates to authenticate a TLS connections with ltcd"`
 	DisableClientTLS bool                    `long:"noclienttls" description:"Disable TLS for the RPC client -- NOTE: This is only allowed if the RPC client is connecting to localhost"`
-	BtcdUsername     string                  `long:"btcdusername" description:"Username for btcd authentication"`
-	BtcdPassword     string                  `long:"btcdpassword" default-mask:"-" description:"Password for btcd authentication"`
+	BtcdUsername     string                  `long:"ltcdusername" description:"Username for ltcd authentication"`
+	BtcdPassword     string                  `long:"ltcdpassword" default-mask:"-" description:"Password for ltcd authentication"`
 	Proxy            string                  `long:"proxy" description:"Connect via SOCKS5 proxy (eg. 127.0.0.1:9050)"`
 	ProxyUser        string                  `long:"proxyuser" description:"Username for proxy server"`
 	ProxyPass        string                  `long:"proxypass" default-mask:"-" description:"Password for proxy server"`
@@ -92,11 +96,11 @@ type config struct {
 	RPCKey                 *cfgutil.ExplicitString `long:"rpckey" description:"File containing the certificate key"`
 	OneTimeTLSKey          bool                    `long:"onetimetlskey" description:"Generate a new TLS certpair at startup, but only write the certificate to disk"`
 	DisableServerTLS       bool                    `long:"noservertls" description:"Disable TLS for the RPC server -- NOTE: This is only allowed if the RPC server is bound to localhost"`
-	LegacyRPCListeners     []string                `long:"rpclisten" description:"Listen for legacy RPC connections on this interface/port (default port: 8332, testnet: 18332, simnet: 18554)"`
+	LegacyRPCListeners     []string                `long:"rpclisten" description:"Listen for legacy RPC connections on this interface/port (default port: 9332, testnet: 19332, simnet: 18554)"`
 	LegacyRPCMaxClients    int64                   `long:"rpcmaxclients" description:"Max number of legacy RPC clients for standard connections"`
 	LegacyRPCMaxWebsockets int64                   `long:"rpcmaxwebsockets" description:"Max number of legacy RPC websocket connections"`
-	Username               string                  `short:"u" long:"username" description:"Username for legacy RPC and btcd authentication (if btcdusername is unset)"`
-	Password               string                  `short:"P" long:"password" default-mask:"-" description:"Password for legacy RPC and btcd authentication (if btcdpassword is unset)"`
+	Username               string                  `short:"u" long:"username" description:"Username for legacy RPC and ltcd authentication (if ltcdusername is unset)"`
+	Password               string                  `short:"P" long:"password" default-mask:"-" description:"Password for legacy RPC and ltcd authentication (if ltcdpassword is unset)"`
 
 	// EXPERIMENTAL RPC server options
 	//
@@ -199,7 +203,7 @@ func parseAndSetDebugLevels(debugLevel string) error {
 	if !strings.Contains(debugLevel, ",") && !strings.Contains(debugLevel, "=") {
 		// Validate debug log level.
 		if !validLogLevel(debugLevel) {
-			str := "The specified debug level [%v] is invalid"
+			str := "the specified debug level [%v] is invalid"
 			return fmt.Errorf(str, debugLevel)
 		}
 
@@ -213,7 +217,7 @@ func parseAndSetDebugLevels(debugLevel string) error {
 	// issues and update the log levels accordingly.
 	for _, logLevelPair := range strings.Split(debugLevel, ",") {
 		if !strings.Contains(logLevelPair, "=") {
-			str := "The specified debug level contains an invalid " +
+			str := "the specified debug level contains an invalid " +
 				"subsystem/level pair [%v]"
 			return fmt.Errorf(str, logLevelPair)
 		}
@@ -224,14 +228,14 @@ func parseAndSetDebugLevels(debugLevel string) error {
 
 		// Validate subsystem.
 		if _, exists := subsystemLoggers[subsysID]; !exists {
-			str := "The specified subsystem [%v] is invalid -- " +
+			str := "the specified subsystem [%v] is invalid -- " +
 				"supported subsytems %v"
 			return fmt.Errorf(str, subsysID, supportedSubsystems())
 		}
 
 		// Validate log level.
 		if !validLogLevel(logLevel) {
-			str := "The specified debug level [%v] is invalid"
+			str := "the specified debug level [%v] is invalid"
 			return fmt.Errorf(str, logLevel)
 		}
 
@@ -273,6 +277,7 @@ func loadConfig() (*config, []string, error) {
 		MaxPeers:               neutrino.MaxPeers,
 		BanDuration:            neutrino.BanDuration,
 		BanThreshold:           neutrino.BanThreshold,
+		DBTimeout:              wallet.DefaultDBTimeout,
 	}
 
 	// Pre-parse the command line options to see if an alternative config
@@ -365,9 +370,48 @@ func loadConfig() (*config, []string, error) {
 		activeNet = &netparams.SimNetParams
 		numNets++
 	}
+	if cfg.SigNet {
+		activeNet = &netparams.SigNetParams
+		numNets++
+
+		// Let the user overwrite the default signet parameters. The
+		// challenge defines the actual signet network to join and the
+		// seed nodes are needed for network discovery.
+		sigNetChallenge := chaincfg.DefaultSignetChallenge
+		sigNetSeeds := chaincfg.DefaultSignetDNSSeeds
+		if cfg.SigNetChallenge != "" {
+			challenge, err := hex.DecodeString(cfg.SigNetChallenge)
+			if err != nil {
+				str := "%s: Invalid signet challenge, hex " +
+					"decode failed: %v"
+				err := fmt.Errorf(str, funcName, err)
+				fmt.Fprintln(os.Stderr, err)
+				fmt.Fprintln(os.Stderr, usageMessage)
+				return nil, nil, err
+			}
+			sigNetChallenge = challenge
+		}
+
+		if len(cfg.SigNetSeedNode) > 0 {
+			sigNetSeeds = make(
+				[]chaincfg.DNSSeed, len(cfg.SigNetSeedNode),
+			)
+			for idx, seed := range cfg.SigNetSeedNode {
+				sigNetSeeds[idx] = chaincfg.DNSSeed{
+					Host:         seed,
+					HasFiltering: false,
+				}
+			}
+		}
+
+		chainParams := chaincfg.CustomSignetParams(
+			sigNetChallenge, sigNetSeeds,
+		)
+		activeNet.Params = &chainParams
+	}
 	if numNets > 1 {
-		str := "%s: The testnet and simnet params can't be used " +
-			"together -- choose one"
+		str := "%s: The testnet, signet and simnet params can't be " +
+			"used together -- choose one"
 		err := fmt.Errorf(str, "loadConfig")
 		fmt.Fprintln(os.Stderr, err)
 		parser.WriteHelp(os.Stderr)
@@ -415,11 +459,11 @@ func loadConfig() (*config, []string, error) {
 
 	// Ensure the wallet exists or create it when the create flag is set.
 	netDir := networkDir(cfg.AppDataDir.Value, activeNet.Params)
-	dbPath := filepath.Join(netDir, walletDbName)
+	dbPath := filepath.Join(netDir, wallet.WalletDBName)
 
 	if cfg.CreateTemp && cfg.Create {
-		err := fmt.Errorf("The flags --create and --createtemp can not " +
-			"be specified together. Use --help for more information.")
+		err := fmt.Errorf("the flags --create and --createtemp can not " +
+			"be specified together. Use --help for more information")
 		fmt.Fprintln(os.Stderr, err)
 		return nil, nil, err
 	}
@@ -430,7 +474,7 @@ func loadConfig() (*config, []string, error) {
 		return nil, nil, err
 	}
 
-	if cfg.CreateTemp {
+	if cfg.CreateTemp { // nolint:gocritic
 		tempWalletExists := false
 
 		if dbFileExists {
@@ -457,8 +501,8 @@ func loadConfig() (*config, []string, error) {
 		// Error if the create flag is set and the wallet already
 		// exists.
 		if dbFileExists {
-			err := fmt.Errorf("The wallet database file `%v` "+
-				"already exists.", dbPath)
+			err := fmt.Errorf("the wallet database file `%v` "+
+				"already exists", dbPath)
 			fmt.Fprintln(os.Stderr, err)
 			return nil, nil, err
 		}
@@ -485,11 +529,11 @@ func loadConfig() (*config, []string, error) {
 			return nil, nil, err
 		}
 		if !keystoreExists {
-			err = fmt.Errorf("The wallet does not exist.  Run with the " +
-				"--create option to initialize and create it.")
+			err = fmt.Errorf("the wallet does not exist, run with " +
+				"the --create option to initialize and create it")
 		} else {
-			err = fmt.Errorf("The wallet is in legacy format.  Run with the " +
-				"--create option to import it.")
+			err = fmt.Errorf("the wallet is in legacy format, run " +
+				"with the --create option to import it")
 		}
 		fmt.Fprintln(os.Stderr, err)
 		return nil, nil, err
@@ -605,7 +649,7 @@ func loadConfig() (*config, []string, error) {
 		for _, addr := range cfg.ExperimentalRPCListeners {
 			_, seen := seenAddresses[addr]
 			if seen {
-				err := fmt.Errorf("Address `%s` may not be "+
+				err := fmt.Errorf("address `%s` may not be "+
 					"used as a listener address for both "+
 					"RPC servers", addr)
 				fmt.Fprintln(os.Stderr, err)

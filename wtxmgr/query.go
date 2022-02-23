@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 

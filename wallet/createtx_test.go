@@ -9,13 +9,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
+	"github.com/stretchr/testify/require"
+)
+
+var (
+	testBlockHash, _ = chainhash.NewHashFromStr(
+		"00000000000000017188b968a371bab95aa43522665353b646e41865abae" +
+			"02a4",
+	)
+	testBlockHeight int32 = 276425
 )
 
 // TestTxToOutput checks that no new address is added to he database if we
@@ -26,7 +38,8 @@ func TestTxToOutputsDryRun(t *testing.T) {
 	defer cleanup()
 
 	// Create an address we can use to send some coins to.
-	addr, err := w.CurrentAddress(0, waddrmgr.KeyScopeBIP0044)
+	keyScope := waddrmgr.KeyScopeBIP0049Plus
+	addr, err := w.CurrentAddress(0, keyScope)
 	if err != nil {
 		t.Fatalf("unable to get current address: %v", addr)
 	}
@@ -45,41 +58,7 @@ func TestTxToOutputsDryRun(t *testing.T) {
 			txOut,
 		},
 	}
-
-	var b bytes.Buffer
-	if err := incomingTx.Serialize(&b); err != nil {
-		t.Fatalf("unable to serialize tx: %v", err)
-	}
-	txBytes := b.Bytes()
-
-	rec, err := wtxmgr.NewTxRecord(txBytes, time.Now())
-	if err != nil {
-		t.Fatalf("unable to create tx record: %v", err)
-	}
-
-	// The block meta will be inserted to tell the wallet this is a
-	// confirmed transaction.
-	blockHash, _ := chainhash.NewHashFromStr(
-		"00000000000000017188b968a371bab95aa43522665353b646e41865abae02a4")
-	block := &wtxmgr.BlockMeta{
-		Block: wtxmgr.Block{Hash: *blockHash, Height: 276425},
-		Time:  time.Unix(1387737310, 0),
-	}
-
-	if err := walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
-		ns := tx.ReadWriteBucket(wtxmgrNamespaceKey)
-		err = w.TxStore.InsertTx(ns, rec, block)
-		if err != nil {
-			return err
-		}
-		err = w.TxStore.AddCredit(ns, rec, block, 0, false)
-		if err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("failed inserting tx: %v", err)
-	}
+	addUtxo(t, w, incomingTx)
 
 	// Now tell the wallet to create a transaction paying to the specified
 	// outputs.
@@ -96,7 +75,9 @@ func TestTxToOutputsDryRun(t *testing.T) {
 
 	// First do a few dry-runs, making sure the number of addresses in the
 	// database us not inflated.
-	dryRunTx, err := w.txToOutputs(txOuts, 0, 1, 1000, true)
+	dryRunTx, err := w.txToOutputs(
+		txOuts, nil, 0, 1, 1000, CoinSelectionLargest, true,
+	)
 	if err != nil {
 		t.Fatalf("unable to author tx: %v", err)
 	}
@@ -111,7 +92,9 @@ func TestTxToOutputsDryRun(t *testing.T) {
 		t.Fatalf("expected 1 address, found %v", len(addresses))
 	}
 
-	dryRunTx2, err := w.txToOutputs(txOuts, 0, 1, 1000, true)
+	dryRunTx2, err := w.txToOutputs(
+		txOuts, nil, 0, 1, 1000, CoinSelectionLargest, true,
+	)
 	if err != nil {
 		t.Fatalf("unable to author tx: %v", err)
 	}
@@ -144,7 +127,9 @@ func TestTxToOutputsDryRun(t *testing.T) {
 
 	// Now we do a proper, non-dry run. This should add a change address
 	// to the database.
-	tx, err := w.txToOutputs(txOuts, 0, 1, 1000, false)
+	tx, err := w.txToOutputs(
+		txOuts, nil, 0, 1, 1000, CoinSelectionLargest, false,
+	)
 	if err != nil {
 		t.Fatalf("unable to author tx: %v", err)
 	}
@@ -174,4 +159,143 @@ func TestTxToOutputsDryRun(t *testing.T) {
 		t.Fatalf("dry-run using different change address " +
 			"than wet run")
 	}
+}
+
+// addUtxo add the given transaction to the wallet's database marked as a
+// confirmed UTXO .
+func addUtxo(t *testing.T, w *Wallet, incomingTx *wire.MsgTx) {
+	var b bytes.Buffer
+	if err := incomingTx.Serialize(&b); err != nil {
+		t.Fatalf("unable to serialize tx: %v", err)
+	}
+	txBytes := b.Bytes()
+
+	rec, err := wtxmgr.NewTxRecord(txBytes, time.Now())
+	if err != nil {
+		t.Fatalf("unable to create tx record: %v", err)
+	}
+
+	// The block meta will be inserted to tell the wallet this is a
+	// confirmed transaction.
+	block := &wtxmgr.BlockMeta{
+		Block: wtxmgr.Block{
+			Hash:   *testBlockHash,
+			Height: testBlockHeight,
+		},
+		Time: time.Unix(1387737310, 0),
+	}
+
+	if err := walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+		ns := tx.ReadWriteBucket(wtxmgrNamespaceKey)
+		err = w.TxStore.InsertTx(ns, rec, block)
+		if err != nil {
+			return err
+		}
+		// Add all tx outputs as credits.
+		for i := 0; i < len(incomingTx.TxOut); i++ {
+			err = w.TxStore.AddCredit(
+				ns, rec, block, uint32(i), false,
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("failed inserting tx: %v", err)
+	}
+}
+
+// TestInputYield verifies the functioning of the inputYieldsPositively.
+func TestInputYield(t *testing.T) {
+	addr, _ := ltcutil.DecodeAddress("ltc1q8c6fshw2dlwun7ekn9qwf37cu2rn755u9ym7p0", &chaincfg.MainNetParams)
+	pkScript, err := txscript.PayToAddrScript(addr)
+	require.NoError(t, err)
+
+	credit := &wtxmgr.Credit{
+		Amount:   1000,
+		PkScript: pkScript,
+	}
+
+	// At 10 sat/b this input is yielding positively.
+	require.True(t, inputYieldsPositively(credit, 10000))
+
+	// At 20 sat/b this input is yielding negatively.
+	require.False(t, inputYieldsPositively(credit, 20000))
+}
+
+// TestTxToOutputsRandom tests random coin selection.
+func TestTxToOutputsRandom(t *testing.T) {
+	w, cleanup := testWallet(t)
+	defer cleanup()
+
+	// Create an address we can use to send some coins to.
+	keyScope := waddrmgr.KeyScopeBIP0049Plus
+	addr, err := w.CurrentAddress(0, keyScope)
+	if err != nil {
+		t.Fatalf("unable to get current address: %v", addr)
+	}
+	p2shAddr, err := txscript.PayToAddrScript(addr)
+	if err != nil {
+		t.Fatalf("unable to convert wallet address to p2sh: %v", err)
+	}
+
+	// Add a set of utxos to the wallet.
+	incomingTx := &wire.MsgTx{
+		TxIn: []*wire.TxIn{
+			{},
+		},
+		TxOut: []*wire.TxOut{},
+	}
+	for amt := int64(5000); amt <= 125000; amt += 10000 {
+		incomingTx.AddTxOut(wire.NewTxOut(amt, p2shAddr))
+	}
+
+	addUtxo(t, w, incomingTx)
+
+	// Now tell the wallet to create a transaction paying to the specified
+	// outputs.
+	txOuts := []*wire.TxOut{
+		{
+			PkScript: p2shAddr,
+			Value:    50000,
+		},
+		{
+			PkScript: p2shAddr,
+			Value:    100000,
+		},
+	}
+
+	const (
+		feeSatPerKb   = 100000
+		maxIterations = 100
+	)
+
+	createTx := func() *txauthor.AuthoredTx {
+		tx, err := w.txToOutputs(
+			txOuts, nil, 0, 1, feeSatPerKb, CoinSelectionRandom, true,
+		)
+		require.NoError(t, err)
+		return tx
+	}
+
+	firstTx := createTx()
+	var isRandom bool
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		tx := createTx()
+
+		// Check to see if we are getting a total input value.
+		// We consider this proof that the randomization works.
+		if tx.TotalInput != firstTx.TotalInput {
+			isRandom = true
+		}
+
+		// At the used fee rate of 100 sat/b, the 5000 sat input is
+		// negatively yielding. We don't expect it to ever be selected.
+		for _, inputValue := range tx.PrevInputValues {
+			require.NotEqual(t, inputValue, ltcutil.Amount(5000))
+		}
+	}
+
+	require.True(t, isRandom)
 }

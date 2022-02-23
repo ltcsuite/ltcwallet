@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
@@ -54,8 +54,8 @@ const (
 // type may provide further fields to provide information specific to that type
 // of address.
 type ManagedAddress interface {
-	// Account returns the account the address is associated with.
-	Account() uint32
+	// Account returns the internal account the address is associated with.
+	InternalAccount() uint32
 
 	// Address returns a ltcutil.Address for the backing address.
 	Address() ltcutil.Address
@@ -130,10 +130,9 @@ type managedAddress struct {
 	imported         bool
 	internal         bool
 	compressed       bool
-	used             bool
 	addrType         AddressType
 	pubKey           *btcec.PublicKey
-	privKeyEncrypted []byte
+	privKeyEncrypted []byte // nil if part of watch-only account
 	privKeyCT        []byte // non-nil if unlocked
 	privKeyMutex     sync.Mutex
 }
@@ -150,6 +149,12 @@ func (a *managedAddress) unlock(key EncryptorDecryptor) ([]byte, error) {
 	// Protect concurrent access to clear text private key.
 	a.privKeyMutex.Lock()
 	defer a.privKeyMutex.Unlock()
+
+	// If the address belongs to a watch-only account, the encrypted private
+	// key won't be present, so we'll return an error.
+	if len(a.privKeyEncrypted) == 0 {
+		return nil, managerError(ErrWatchingOnly, errWatchingOnly, nil)
+	}
 
 	if len(a.privKeyCT) == 0 {
 		privKey, err := key.Decrypt(a.privKeyEncrypted)
@@ -177,11 +182,12 @@ func (a *managedAddress) lock() {
 	a.privKeyMutex.Unlock()
 }
 
-// Account returns the account number the address is associated with.
+// InternalAccount returns the internal account number the address is associated
+// with.
 //
 // This is part of the ManagedAddress interface implementation.
-func (a *managedAddress) Account() uint32 {
-	return a.derivationPath.Account
+func (a *managedAddress) InternalAccount() uint32 {
+	return a.derivationPath.InternalAccount
 }
 
 // AddrType returns the address type of the managed address. This can be used
@@ -298,7 +304,7 @@ func (a *managedAddress) PrivKey() (*btcec.PrivateKey, error) {
 		return nil, err
 	}
 
-	privKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), privKeyCopy)
+	privKey, _ := btcec.PrivKeyFromBytes(privKeyCopy)
 	zero.Bytes(privKeyCopy)
 	return privKey, nil
 }
@@ -360,7 +366,7 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 	case NestedWitnessPubKey:
 		// For this address type we'l generate an address which is
 		// backwards compatible to Bitcoin nodes running 0.6.0 onwards, but
-		// allows us to take advantage of segwit's scripting improvments,
+		// allows us to take advantage of segwit's scripting improvements,
 		// and malleability fixes.
 
 		// First, we'll generate a normal p2wkh address from the pubkey hash.
@@ -440,7 +446,7 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 
 	// Leverage the code to create a managed address without a private key
 	// and then add the private key to it.
-	ecPubKey := (*btcec.PublicKey)(&privKey.PublicKey)
+	ecPubKey := privKey.PubKey()
 	managedAddr, err := newManagedAddressWithoutPrivKey(
 		s, derivationPath, ecPubKey, compressed, addrType,
 	)
@@ -504,7 +510,6 @@ type scriptAddress struct {
 	scriptEncrypted []byte
 	scriptCT        []byte
 	scriptMutex     sync.Mutex
-	used            bool
 }
 
 // Enforce scriptAddress satisfies the ManagedScriptAddress interface.
@@ -544,11 +549,11 @@ func (a *scriptAddress) lock() {
 	a.scriptMutex.Unlock()
 }
 
-// Account returns the account the address is associated with.  This will always
-// be the ImportedAddrAccount constant for script addresses.
+// InternalAccount returns the account the address is associated with. This will
+// always be the ImportedAddrAccount constant for script addresses.
 //
 // This is part of the ManagedAddress interface implementation.
-func (a *scriptAddress) Account() uint32 {
+func (a *scriptAddress) InternalAccount() uint32 {
 	return a.account
 }
 

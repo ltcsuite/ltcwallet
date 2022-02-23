@@ -69,7 +69,9 @@ func walletMain() error {
 	}
 
 	dbDir := networkDir(cfg.AppDataDir.Value, activeNet.Params)
-	loader := wallet.NewLoader(activeNet.Params, dbDir, true, 250)
+	loader := wallet.NewLoader(
+		activeNet.Params, dbDir, true, cfg.DBTimeout, 250,
+	)
 
 	// Create and start HTTP server to serve wallet client connections.
 	// This will be updated with the wallet and chain server RPC client
@@ -160,13 +162,15 @@ func rpcClientConnectLoop(legacyRPCServer *legacyrpc.Server, loader *wallet.Load
 				spvdb        walletdb.DB
 			)
 			netDir := networkDir(cfg.AppDataDir.Value, activeNet.Params)
-			spvdb, err = walletdb.Create("bdb",
-				filepath.Join(netDir, "neutrino.db"))
-			defer spvdb.Close()
+			spvdb, err = walletdb.Create(
+				"bdb", filepath.Join(netDir, "neutrino.db"),
+				true, cfg.DBTimeout,
+			)
 			if err != nil {
 				log.Errorf("Unable to create Neutrino DB: %s", err)
 				continue
 			}
+			defer spvdb.Close()
 			chainService, err = neutrino.NewChainService(
 				neutrino.Config{
 					DataDir:      netDir,

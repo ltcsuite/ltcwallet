@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcwallet/rpc/legacyrpc"
 	"github.com/ltcsuite/ltcwallet/rpc/rpcserver"
 	"github.com/ltcsuite/ltcwallet/wallet"

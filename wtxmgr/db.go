@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
@@ -1543,7 +1543,8 @@ func deleteBuckets(ns walletdb.ReadWriteBucket) error {
 		str := "failed to delete unmined inputs bucket"
 		return storeError(ErrDatabase, str, err)
 	}
-	if err := ns.DeleteNestedBucket(bucketLockedOutputs); err != nil {
+	err := ns.DeleteNestedBucket(bucketLockedOutputs)
+	if err != nil && err != walletdb.ErrBucketNotFound {
 		str := "failed to delete locked outputs bucket"
 		return storeError(ErrDatabase, str, err)
 	}
@@ -1573,51 +1574,4 @@ func fetchVersion(ns walletdb.ReadBucket) (uint32, error) {
 	}
 
 	return byteOrder.Uint32(v), nil
-}
-
-func scopedUpdate(db walletdb.DB, namespaceKey []byte, f func(walletdb.ReadWriteBucket) error) error {
-	tx, err := db.BeginReadWriteTx()
-	if err != nil {
-		str := "cannot begin update"
-		return storeError(ErrDatabase, str, err)
-	}
-	err = f(tx.ReadWriteBucket(namespaceKey))
-	if err != nil {
-		rollbackErr := tx.Rollback()
-		if rollbackErr != nil {
-			const desc = "rollback failed"
-			serr, ok := err.(Error)
-			if !ok {
-				// This really shouldn't happen.
-				return storeError(ErrDatabase, desc, rollbackErr)
-			}
-			serr.Desc = desc + ": " + serr.Desc
-			return serr
-		}
-		return err
-	}
-	err = tx.Commit()
-	if err != nil {
-		str := "commit failed"
-		return storeError(ErrDatabase, str, err)
-	}
-	return nil
-}
-
-func scopedView(db walletdb.DB, namespaceKey []byte, f func(walletdb.ReadBucket) error) error {
-	tx, err := db.BeginReadTx()
-	if err != nil {
-		str := "cannot begin view"
-		return storeError(ErrDatabase, str, err)
-	}
-	err = f(tx.ReadBucket(namespaceKey))
-	rollbackErr := tx.Rollback()
-	if err != nil {
-		return err
-	}
-	if rollbackErr != nil {
-		str := "cannot close view"
-		return storeError(ErrDatabase, str, rollbackErr)
-	}
-	return nil
 }

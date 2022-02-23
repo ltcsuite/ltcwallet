@@ -9,37 +9,14 @@ package txrules
 import (
 	"errors"
 
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/mempool"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // DefaultRelayFeePerKb is the default minimum relay fee policy for a mempool.
 const DefaultRelayFeePerKb ltcutil.Amount = 1e3
-
-// GetDustThreshold is used to define the amount below which output will be
-// determined as dust. Threshold is determined as 3 times the relay fee.
-func GetDustThreshold(scriptSize int, relayFeePerKb ltcutil.Amount) ltcutil.Amount {
-	// Calculate the total (estimated) cost to the network.  This is
-	// calculated using the serialize size of the output plus the serial
-	// size of a transaction input which redeems it.  The output is assumed
-	// to be compressed P2PKH as this is the most common script type.  Use
-	// the average size of a compressed P2PKH redeem input (148) rather than
-	// the largest possible (txsizes.RedeemP2PKHInputSize).
-	totalSize := 8 + wire.VarIntSerializeSize(uint64(scriptSize)) +
-		scriptSize + 148
-
-	byteFee := relayFeePerKb / 1000
-	relayFee := ltcutil.Amount(totalSize) * byteFee
-	return 3 * relayFee
-}
-
-// IsDustAmount determines whether a transaction output value and script length would
-// cause the output to be considered dust.  Transactions with dust outputs are
-// not standard and are rejected by mempools with default policies.
-func IsDustAmount(amount ltcutil.Amount, scriptSize int, relayFeePerKb ltcutil.Amount) bool {
-	return amount < GetDustThreshold(scriptSize, relayFeePerKb)
-}
 
 // IsDustOutput determines whether a transaction output is considered dust.
 // Transactions with dust outputs are not standard and are rejected by mempools
@@ -50,13 +27,7 @@ func IsDustOutput(output *wire.TxOut, relayFeePerKb ltcutil.Amount) bool {
 		return false
 	}
 
-	// All other unspendable outputs are considered dust.
-	if txscript.IsUnspendable(output.PkScript) {
-		return true
-	}
-
-	return IsDustAmount(ltcutil.Amount(output.Value), len(output.PkScript),
-		relayFeePerKb)
+	return mempool.IsDust(output, relayFeePerKb)
 }
 
 // Transaction rule violations
