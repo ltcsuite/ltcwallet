@@ -11,6 +11,8 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/internal/zero"
@@ -199,6 +201,12 @@ var (
 		Coin:    0,
 	}
 
+	// KeyScopeMweb is the key scope for MWEB derivation.
+	KeyScopeMweb = KeyScope{
+		Purpose: 1000,
+		Coin:    0,
+	}
+
 	// KeyScopeLiteWallet is the key scope for LiteWallet derivation.
 	KeyScopeLiteWallet = KeyScope{
 		Purpose: 9999,
@@ -212,6 +220,7 @@ var (
 		KeyScopeBIP0084,
 		KeyScopeBIP0086,
 		KeyScopeBIP0044,
+		KeyScopeMweb,
 		KeyScopeLiteWallet,
 	}
 
@@ -234,6 +243,10 @@ var (
 		KeyScopeBIP0044: {
 			InternalAddrType: PubKeyHash,
 			ExternalAddrType: PubKeyHash,
+		},
+		KeyScopeMweb: {
+			InternalAddrType: Mweb,
+			ExternalAddrType: Mweb,
 		},
 		KeyScopeLiteWallet: {
 			InternalAddrType: PubKeyHash,
@@ -405,6 +418,10 @@ func (s *ScopedKeyManager) deriveKey(acctInfo *accountInfo, branch,
 		acctKey = acctInfo.acctKeyPriv
 	}
 
+	if acctInfo.scanKey != nil {
+		return s.deriveSpendKey(acctKey, acctInfo, index)
+	}
+
 	// Derive and return the key.
 	branchKey, err := acctKey.DeriveNonStandard(branch) // nolint:staticcheck
 	if err != nil {
@@ -425,6 +442,39 @@ func (s *ScopedKeyManager) deriveKey(acctInfo *accountInfo, branch,
 	}
 
 	return addressKey, nil
+}
+
+// deriveSpendKey returns either a public or private derived MWEB spend key
+// for the given extended key, account info, and index.
+func (s *ScopedKeyManager) deriveSpendKey(key *hdkeychain.ExtendedKey,
+	acctInfo *accountInfo, index uint32) (*hdkeychain.ExtendedKey, error) {
+
+	scanKeyPriv, _ := acctInfo.scanKey.ECPrivKey()
+	defer scanKeyPriv.Zero()
+	scanSecret := mw.SecretKey(scanKeyPriv.Key.Bytes())
+	defer zero.Bytes(scanSecret[:])
+
+	var keyBytes []byte
+	if key.IsPrivate() {
+		spendKey, err := key.Derive(hdkeychain.HardenedKeyStart + 1)
+		if err != nil {
+			str := "failed to derive spend key"
+			return nil, managerError(ErrKeyChain, str, err)
+		}
+		defer spendKey.Zero() // Ensure key is zeroed when done.
+		spendKeyPriv, _ := spendKey.ECPrivKey()
+		defer spendKeyPriv.Zero()
+		spendSecret := mw.SecretKey(spendKeyPriv.Key.Bytes())
+		defer zero.Bytes(spendSecret[:])
+		keychain := &mweb.Keychain{Scan: &scanSecret, Spend: &spendSecret}
+		keyBytes = keychain.SpendKey(index)[:]
+	} else {
+		spendKeyPub, _ := acctInfo.spendPubKey.ECPubKey()
+		spendPubKey := (*mw.PublicKey)(spendKeyPub.SerializeCompressed())
+		keychain := &mweb.Keychain{Scan: &scanSecret, SpendPubKey: spendPubKey}
+		keyBytes = keychain.Address(index).Spend[:]
+	}
+	return hdkeychain.NewExtendedKey(nil, keyBytes, nil, nil, 0, 0, key.IsPrivate()), nil
 }
 
 // loadAccountInfo attempts to load and cache information about the given
@@ -495,6 +545,28 @@ func (s *ScopedKeyManager) loadAccountInfo(ns walletdb.ReadBucket,
 			if err != nil {
 				str := fmt.Sprintf("failed to decrypt private "+
 					"key for account %d", account)
+				return nil, managerError(ErrCrypto, str, err)
+			}
+		}
+
+		// Use the crypto public key to decrypt the account
+		// scan key and spend pubkey.
+		if len(row.scanKeyEncrypted) > 0 {
+			acctInfo.scanKey, err = decryptKey(
+				s.rootManager.cryptoKeyPub, row.scanKeyEncrypted,
+			)
+			if err != nil {
+				str := fmt.Sprintf("failed to decrypt scan key "+
+					"for account %d", account)
+				return nil, managerError(ErrCrypto, str, err)
+			}
+
+			acctInfo.spendPubKey, err = decryptKey(
+				s.rootManager.cryptoKeyPub, row.spendPubKeyEncrypted,
+			)
+			if err != nil {
+				str := fmt.Sprintf("failed to decrypt spend key "+
+					"for account %d", account)
 				return nil, managerError(ErrCrypto, str, err)
 			}
 		}
@@ -833,7 +905,7 @@ func (s *ScopedKeyManager) importedAddressRowToManaged(row *dbImportedAddressRow
 	// TODO: Handle imported key being part of internal branch.
 	compressed := len(pubBytes) == btcec.PubKeyBytesLenCompressed
 	ma, err := newManagedAddressWithoutPrivKey(
-		s, ImportedDerivationPath, pubKey, compressed,
+		s, ImportedDerivationPath, pubKey, nil, compressed,
 		s.addrSchema.ExternalAddrType,
 	)
 	if err != nil {
@@ -1076,6 +1148,15 @@ func (s *ScopedKeyManager) nextAddresses(ns walletdb.ReadWriteBucket,
 		// invalid, so use a loop to derive the next valid child.
 		var nextKey *hdkeychain.ExtendedKey
 		for {
+			if acctInfo.scanKey != nil {
+				nextKey, err = s.deriveSpendKey(acctKey, acctInfo, nextIndex)
+				if err != nil {
+					return nil, err
+				}
+				nextIndex++
+				break
+			}
+
 			// Derive the next child in the external chain branch.
 			key, err := branchKey.DeriveNonStandard(nextIndex) // nolint:staticcheck
 			if err != nil {
@@ -1305,6 +1386,15 @@ func (s *ScopedKeyManager) extendAddresses(ns walletdb.ReadWriteBucket,
 		// invalid, so use a loop to derive the next valid child.
 		var nextKey *hdkeychain.ExtendedKey
 		for {
+			if acctInfo.scanKey != nil {
+				nextKey, err = s.deriveSpendKey(acctKey, acctInfo, nextIndex)
+				if err != nil {
+					return err
+				}
+				nextIndex++
+				break
+			}
+
 			// Derive the next child in the external chain branch.
 			key, err := branchKey.DeriveNonStandard(nextIndex) // nolint:staticcheck
 			if err != nil {
@@ -1700,12 +1790,27 @@ func (s *ScopedKeyManager) newAccount(ns walletdb.ReadWriteBucket,
 		return managerError(ErrKeyChain, str, err)
 	}
 
+	acctKeyScan, err := acctKeyPriv.Derive(hdkeychain.HardenedKeyStart)
+	if err != nil {
+		str := "failed to derive scan key"
+		return managerError(ErrKeyChain, str, err)
+	}
+	defer acctKeyScan.Zero() // Ensure key is zeroed when done.
+
+	spendKey, err := acctKeyPriv.Derive(hdkeychain.HardenedKeyStart + 1)
+	if err != nil {
+		str := "failed to derive spend key"
+		return managerError(ErrKeyChain, str, err)
+	}
+	defer spendKey.Zero() // Ensure key is zeroed when done.
+	acctKeySpend, _ := spendKey.Neuter()
+
 	// Encrypt the default account keys with the associated crypto keys.
 	acctPubEnc, err := s.rootManager.cryptoKeyPub.Encrypt(
 		[]byte(acctKeyPub.String()),
 	)
 	if err != nil {
-		str := "failed to  encrypt public key for account"
+		str := "failed to encrypt public key for account"
 		return managerError(ErrCrypto, str, err)
 	}
 	acctPrivEnc, err := s.rootManager.cryptoKeyPriv.Encrypt(
@@ -1715,11 +1820,30 @@ func (s *ScopedKeyManager) newAccount(ns walletdb.ReadWriteBucket,
 		str := "failed to encrypt private key for account"
 		return managerError(ErrCrypto, str, err)
 	}
+	acctScanEnc, err := s.rootManager.cryptoKeyPub.Encrypt(
+		[]byte(acctKeyScan.String()),
+	)
+	if err != nil {
+		str := "failed to encrypt scan key for account"
+		return managerError(ErrCrypto, str, err)
+	}
+	acctSpendEnc, err := s.rootManager.cryptoKeyPub.Encrypt(
+		[]byte(acctKeySpend.String()),
+	)
+	if err != nil {
+		str := "failed to encrypt spend key for account"
+		return managerError(ErrCrypto, str, err)
+	}
+	if s.scope != KeyScopeMweb {
+		acctScanEnc = nil
+		acctSpendEnc = nil
+	}
 
 	// We have the encrypted account extended keys, so save them to the
 	// database
 	err = putDefaultAccountInfo(
-		ns, &s.scope, account, acctPubEnc, acctPrivEnc, 0, 0, name,
+		ns, &s.scope, account, acctPubEnc, acctPrivEnc,
+		acctScanEnc, acctSpendEnc, 0, 0, name,
 	)
 	if err != nil {
 		return err
@@ -1863,9 +1987,9 @@ func (s *ScopedKeyManager) RenameAccount(ns walletdb.ReadWriteBucket,
 		}
 
 		err = putDefaultAccountInfo(
-			ns, &s.scope, account, row.pubKeyEncrypted,
-			row.privKeyEncrypted, row.nextExternalIndex,
-			row.nextInternalIndex, name,
+			ns, &s.scope, account, row.pubKeyEncrypted, row.privKeyEncrypted,
+			row.scanKeyEncrypted, row.spendPubKeyEncrypted,
+			row.nextExternalIndex, row.nextInternalIndex, name,
 		)
 		if err != nil {
 			return err
@@ -2093,7 +2217,7 @@ func (s *ScopedKeyManager) toImportedPrivateManagedAddress(
 	//
 	// TODO: Handle imported key being part of internal branch.
 	managedAddr, err := newManagedAddress(
-		s, ImportedDerivationPath, wif.PrivKey, wif.CompressPubKey,
+		s, ImportedDerivationPath, wif.PrivKey, nil, wif.CompressPubKey,
 		s.addrSchema.ExternalAddrType, nil,
 	)
 	if err != nil {
@@ -2116,7 +2240,7 @@ func (s *ScopedKeyManager) toImportedPublicManagedAddress(
 	//
 	// TODO: Handle imported key being part of internal branch.
 	managedAddr, err := newManagedAddressWithoutPrivKey(
-		s, ImportedDerivationPath, pubKey, compressed,
+		s, ImportedDerivationPath, pubKey, nil, compressed,
 		s.addrSchema.ExternalAddrType,
 	)
 	if err != nil {
@@ -2520,7 +2644,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 	switch net {
 	case wire.MainNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeLiteWallet:
 			version = HDVersionMainNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionMainNetBIP0049
@@ -2534,7 +2658,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 		netparams.SigNetWire(s.rootManager.ChainParams()):
 
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeLiteWallet:
 			version = HDVersionTestNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionTestNetBIP0049
@@ -2546,7 +2670,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 
 	case wire.SimNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeLiteWallet:
 			version = HDVersionSimNetBIP0044
 		// We use the mainnet versions for simnet keys when the keys
 		// belong to a key scope which simnet doesn't have a defined

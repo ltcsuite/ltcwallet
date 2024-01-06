@@ -43,7 +43,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/objx v0.5.0 // indirect
 	go.etcd.io/bbolt v1.3.7 // indirect
-	golang.org/x/sys v0.8.0 // indirect
+	golang.org/x/sys v0.13.0 // indirect
 	golang.org/x/text v0.9.0 // indirect
 	google.golang.org/genproto v0.0.0-20230110181048-76db0878b65f // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
@@ -70,4 +70,12 @@ replace github.com/ltcsuite/ltcwallet/wallet/txsizes => ./wallet/txsizes
 
 replace github.com/ltcsuite/ltcd => ../ltcd
 
+replace github.com/ltcsuite/ltcd/ltcutil => ../ltcd/ltcutil
+
+replace github.com/ltcsuite/ltcd/btcec/v2 => ../ltcd/btcec
+
 replace github.com/ltcsuite/ltcd/chaincfg/chainhash => ../ltcd/chaincfg/chainhash
+
+replace github.com/ltcsuite/ltcwallet/wallet/txrules => ./wallet/txrules
+
+replace github.com/ltcsuite/ltcwallet/wtxmgr => ./wtxmgr

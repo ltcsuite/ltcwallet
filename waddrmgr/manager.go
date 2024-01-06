@@ -154,6 +154,10 @@ type accountInfo struct {
 	acctKeyPriv      *hdkeychain.ExtendedKey
 	acctKeyPub       *hdkeychain.ExtendedKey
 
+	// Used to derive MWEB addresses and check for outputs.
+	scanKey     *hdkeychain.ExtendedKey
+	spendPubKey *hdkeychain.ExtendedKey
+
 	// The external branch is used for all addresses which are intended for
 	// external use.
 	nextExternalIndex uint32
@@ -1737,6 +1741,21 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 		return managerError(ErrKeyChain, str, err)
 	}
 
+	acctKeyScan, err := acctKeyPriv.Derive(hdkeychain.HardenedKeyStart)
+	if err != nil {
+		str := "failed to derive scan key"
+		return managerError(ErrKeyChain, str, err)
+	}
+	defer acctKeyScan.Zero() // Ensure key is zeroed when done.
+
+	spendKey, err := acctKeyPriv.Derive(hdkeychain.HardenedKeyStart + 1)
+	if err != nil {
+		str := "failed to derive spend key"
+		return managerError(ErrKeyChain, str, err)
+	}
+	defer spendKey.Zero() // Ensure key is zeroed when done.
+	acctKeySpend, _ := spendKey.Neuter()
+
 	// Encrypt the cointype keys with the associated crypto keys.
 	coinTypeKeyPub, err := coinTypeKeyPriv.Neuter()
 	if err != nil {
@@ -1757,13 +1776,27 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 	// Encrypt the default account keys with the associated crypto keys.
 	acctPubEnc, err := cryptoKeyPub.Encrypt([]byte(acctKeyPub.String()))
 	if err != nil {
-		str := "failed to  encrypt public key for account 0"
+		str := "failed to encrypt public key for account 0"
 		return managerError(ErrCrypto, str, err)
 	}
 	acctPrivEnc, err := cryptoKeyPriv.Encrypt([]byte(acctKeyPriv.String()))
 	if err != nil {
 		str := "failed to encrypt private key for account 0"
 		return managerError(ErrCrypto, str, err)
+	}
+	acctScanEnc, err := cryptoKeyPub.Encrypt([]byte(acctKeyScan.String()))
+	if err != nil {
+		str := "failed to encrypt scan key for account 0"
+		return managerError(ErrCrypto, str, err)
+	}
+	acctSpendEnc, err := cryptoKeyPub.Encrypt([]byte(acctKeySpend.String()))
+	if err != nil {
+		str := "failed to encrypt spend key for account 0"
+		return managerError(ErrCrypto, str, err)
+	}
+	if scope != KeyScopeMweb {
+		acctScanEnc = nil
+		acctSpendEnc = nil
 	}
 
 	// Save the encrypted cointype keys to the database.
@@ -1774,15 +1807,15 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 
 	// Save the information for the default account to the database.
 	err = putDefaultAccountInfo(
-		ns, &scope, DefaultAccountNum, acctPubEnc, acctPrivEnc, 0, 0,
-		defaultAccountName,
+		ns, &scope, DefaultAccountNum, acctPubEnc, acctPrivEnc,
+		acctScanEnc, acctSpendEnc, 0, 0, defaultAccountName,
 	)
 	if err != nil {
 		return err
 	}
 
 	return putDefaultAccountInfo(
-		ns, &scope, ImportedAddrAccount, nil, nil, 0, 0,
+		ns, &scope, ImportedAddrAccount, nil, nil, nil, nil, 0, 0,
 		ImportedAddrAccountName,
 	)
 }
