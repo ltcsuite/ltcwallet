@@ -199,6 +199,12 @@ var (
 		Coin:    0,
 	}
 
+	// KeyScopeLiteWallet is the key scope for LiteWallet derivation.
+	KeyScopeLiteWallet = KeyScope{
+		Purpose: 9999,
+		Coin:    0,
+	}
+
 	// DefaultKeyScopes is the set of default key scopes that will be
 	// created by the root manager upon initial creation.
 	DefaultKeyScopes = []KeyScope{
@@ -206,6 +212,7 @@ var (
 		KeyScopeBIP0084,
 		KeyScopeBIP0086,
 		KeyScopeBIP0044,
+		KeyScopeLiteWallet,
 	}
 
 	// ScopeAddrMap is a map from the default key scopes to the scope
@@ -225,6 +232,10 @@ var (
 			InternalAddrType: TaprootPubKey,
 		},
 		KeyScopeBIP0044: {
+			InternalAddrType: PubKeyHash,
+			ExternalAddrType: PubKeyHash,
+		},
+		KeyScopeLiteWallet: {
 			InternalAddrType: PubKeyHash,
 			ExternalAddrType: PubKeyHash,
 		},
@@ -2509,7 +2520,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 	switch net {
 	case wire.MainNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeLiteWallet:
 			version = HDVersionMainNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionMainNetBIP0049
@@ -2523,7 +2534,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 		netparams.SigNetWire(s.rootManager.ChainParams()):
 
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeLiteWallet:
 			version = HDVersionTestNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionTestNetBIP0049
@@ -2535,7 +2546,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 
 	case wire.SimNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeLiteWallet:
 			version = HDVersionSimNetBIP0044
 		// We use the mainnet versions for simnet keys when the keys
 		// belong to a key scope which simnet doesn't have a defined

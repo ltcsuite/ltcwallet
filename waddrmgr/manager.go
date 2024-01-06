@@ -593,7 +593,7 @@ func (m *Manager) NewScopedKeyManager(ns walletdb.ReadWriteBucket,
 		// cointype key using the master HD private key, then encrypt
 		// it along with the first account using our crypto keys.
 		err = createManagerKeyScope(
-			ns, scope, rootPriv, m.cryptoKeyPub, m.cryptoKeyPriv,
+			ns, scope, scope.Coin, rootPriv, m.cryptoKeyPub, m.cryptoKeyPriv,
 		)
 		if err != nil {
 			return nil, err
@@ -1438,10 +1438,10 @@ func newManager(chainParams *chaincfg.Params, masterKeyPub *snacl.SecretKey,
 // In particular this is the hierarchical deterministic extended key path:
 // m/purpose'/<coin type>'
 func deriveCoinTypeKey(masterNode *hdkeychain.ExtendedKey,
-	scope KeyScope) (*hdkeychain.ExtendedKey, error) {
+	scope KeyScope, coinType uint32) (*hdkeychain.ExtendedKey, error) {
 
 	// Enforce maximum coin type.
-	if scope.Coin > maxCoinType {
+	if coinType > maxCoinType {
 		err := managerError(ErrCoinTypeTooHigh, errCoinTypeTooHigh, nil)
 		return nil, err
 	}
@@ -1467,7 +1467,7 @@ func deriveCoinTypeKey(masterNode *hdkeychain.ExtendedKey,
 
 	// Derive the coin type key as a child of the purpose key.
 	coinTypeKey, err := purpose.DeriveNonStandard( // nolint:staticcheck
-		scope.Coin + hdkeychain.HardenedKeyStart,
+		coinType + hdkeychain.HardenedKeyStart,
 	)
 	if err != nil {
 		return nil, err
@@ -1686,16 +1686,20 @@ func Open(ns walletdb.ReadBucket, pubPassphrase []byte,
 // This partitions key derivation for a particular purpose+coin tuple, allowing
 // multiple address derivation schems to be maintained concurrently.
 func createManagerKeyScope(ns walletdb.ReadWriteBucket,
-	scope KeyScope, root *hdkeychain.ExtendedKey,
+	scope KeyScope, coinType uint32, root *hdkeychain.ExtendedKey,
 	cryptoKeyPub, cryptoKeyPriv EncryptorDecryptor) error {
 
 	// Derive the cointype key according to the passed scope.
-	coinTypeKeyPriv, err := deriveCoinTypeKey(root, scope)
+	coinTypeKeyPriv, err := deriveCoinTypeKey(root, scope, coinType)
 	if err != nil {
 		str := "failed to derive cointype extended key"
 		return managerError(ErrKeyChain, str, err)
 	}
-	defer coinTypeKeyPriv.Zero()
+	if scope == KeyScopeLiteWallet {
+		coinTypeKeyPriv = root
+	} else {
+		defer coinTypeKeyPriv.Zero()
+	}
 
 	// Derive the account key for the first account according our
 	// BIP0044-like derivation.
@@ -1942,7 +1946,7 @@ func Create(ns walletdb.ReadWriteBucket, rootKey *hdkeychain.ExtendedKey,
 		// first default account.
 		for _, defaultScope := range DefaultKeyScopes {
 			err := createManagerKeyScope(
-				ns, defaultScope, rootKey, cryptoKeyPub, cryptoKeyPriv,
+				ns, defaultScope, chainParams.HDCoinType, rootKey, cryptoKeyPub, cryptoKeyPriv,
 			)
 			if err != nil {
 				return maybeConvertDbError(err)
