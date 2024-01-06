@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
@@ -93,6 +94,7 @@ func (s *NeutrinoClient) BackEnd() string {
 
 // Start replicates the RPC client's Start method.
 func (s *NeutrinoClient) Start() error {
+	s.CS.RegisterMempoolCallback(s.onRecvTx)
 	if err := s.CS.Start(); err != nil {
 		return fmt.Errorf("error starting chain service: %v", err)
 	}
@@ -382,6 +384,9 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 	defer s.rescanMtx.Unlock()
 
 	s.clientMtx.Lock()
+
+	s.CS.NotifyMempoolReceived(addrs)
+
 	if !s.started {
 		s.clientMtx.Unlock()
 		return fmt.Errorf("can't do a rescan when the chain client " +
@@ -796,4 +801,17 @@ out:
 	s.Stop()
 	close(s.dequeueNotification)
 	s.wg.Done()
+}
+
+func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx, block *btcjson.BlockDetails) {
+	rec, err := wtxmgr.NewTxRecordFromMsgTx(tx.MsgTx(), time.Now())
+	if err != nil {
+		log.Errorf("Cannot create transaction record for relevant "+
+			"tx: %v", err)
+		return
+	}
+	select {
+	case s.enqueueNotification <- RelevantTx{rec, nil}:
+	case <-s.quit:
+	}
 }
