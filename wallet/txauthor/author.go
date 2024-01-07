@@ -213,6 +213,11 @@ func AddAllInputScripts(tx *wire.MsgTx, prevPkScripts [][]byte,
 		return err
 	}
 
+	inputFetcher, err := TXPrevOutFetcher(tx, prevPkScripts, inputValues)
+	if err != nil {
+		return err
+	}
+
 	inputs := tx.TxIn
 	hashCache := txscript.NewTxSigHashes(tx, inputFetcher)
 	chainParams := secrets.ChainParams()
@@ -431,6 +436,31 @@ func (tx *AuthoredTx) AddAllInputScripts(secrets SecretsSource) error {
 	return AddAllInputScripts(
 		tx.Tx, tx.PrevScripts, tx.PrevInputValues, secrets,
 	)
+}
+
+// TXPrevOutFetcher creates a txscript.PrevOutFetcher from a given slice of
+// previous pk scripts and input values.
+func TXPrevOutFetcher(tx *wire.MsgTx, prevPkScripts [][]byte,
+	inputValues []ltcutil.Amount) (*txscript.MultiPrevOutFetcher, error) {
+
+	if len(tx.TxIn) != len(prevPkScripts) {
+		return nil, errors.New("tx.TxIn and prevPkScripts slices " +
+			"must have equal length")
+	}
+	if len(tx.TxIn) != len(inputValues) {
+		return nil, errors.New("tx.TxIn and inputValues slices " +
+			"must have equal length")
+	}
+
+	fetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for idx, txin := range tx.TxIn {
+		fetcher.AddPrevOut(txin.PreviousOutPoint, &wire.TxOut{
+			Value:    int64(inputValues[idx]),
+			PkScript: prevPkScripts[idx],
+		})
+	}
+
+	return fetcher, nil
 }
 
 // TXPrevOutFetcher creates a txscript.PrevOutFetcher from a given slice of
