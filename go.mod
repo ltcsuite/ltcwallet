@@ -75,3 +75,7 @@ replace github.com/ltcsuite/ltcd/ltcutil => ../ltcd/ltcutil
 replace github.com/ltcsuite/ltcd/btcec/v2 => ../ltcd/btcec
 
 replace github.com/ltcsuite/ltcd/chaincfg/chainhash => ../ltcd/chaincfg/chainhash
+
+replace github.com/ltcsuite/ltcwallet/wallet/txrules => ./wallet/txrules
+
+replace github.com/ltcsuite/ltcwallet/wtxmgr => ./wtxmgr
