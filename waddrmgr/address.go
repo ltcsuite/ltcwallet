@@ -15,6 +15,7 @@ import (
 	"github.com/ltcsuite/ltcd/btcec/v2/schnorr"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/walletdb"
@@ -80,6 +81,9 @@ const (
 	// TaprootScript represents a p2tr (pay-to-taproot) address type that
 	// commits to a script and not just a single key.
 	TaprootScript
+
+	// Mweb represents an MWEB address.
+	Mweb
 )
 
 const (
@@ -294,6 +298,8 @@ func (a *managedAddress) AddrHash() []byte {
 		hash = n.Hash160()[:]
 	case *ltcutil.AddressTaproot:
 		hash = n.WitnessProgram()
+	case *ltcutil.AddressMweb:
+		hash = n.ScriptAddress()
 	}
 
 	return hash
@@ -460,7 +466,7 @@ func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
 	// This can potentially catch a hardware/software error when mapping
 	// the public key to a Bitcoin address.
 	addr, err := newManagedAddressWithoutPrivKey(
-		a.manager, a.derivationPath, a.pubKey, a.compressed, a.addrType,
+		a.manager, a.derivationPath, a.pubKey, nil, a.compressed, a.addrType,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to re-create addr: %w", err)
@@ -511,7 +517,8 @@ func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
 // passed account, public key, and whether or not the public key should be
 // compressed.
 func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
-	derivationPath DerivationPath, pubKey *btcec.PublicKey, compressed bool,
+	derivationPath DerivationPath, pubKey *btcec.PublicKey,
+	scanKey *btcec.PrivateKey, compressed bool,
 	addrType AddressType) (*managedAddress, error) {
 
 	// Create a pay-to-pubkey-hash address from the public key.
@@ -583,6 +590,18 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 		if err != nil {
 			return nil, err
 		}
+
+	case Mweb:
+		scanSecret := scanKey.Serialize()
+		defer zero.Bytes(scanSecret)
+		spendPubKey := (*mw.PublicKey)(pubKey.SerializeCompressed())
+		address = ltcutil.NewAddressMweb(
+			&mw.StealthAddress{
+				Scan:  spendPubKey.Mul((*mw.SecretKey)(scanSecret)),
+				Spend: spendPubKey,
+			},
+			m.rootManager.chainParams,
+		)
 	}
 
 	return &managedAddress{
@@ -603,7 +622,7 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 // private key, and whether or not the public key is compressed.  The managed
 // address will have access to the private and public keys.
 func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
-	privKey *btcec.PrivateKey, compressed bool,
+	privKey, scanKey *btcec.PrivateKey, compressed bool,
 	addrType AddressType, acctInfo *accountInfo) (*managedAddress, error) {
 
 	// Encrypt the private key.
@@ -621,7 +640,7 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 	// and then add the private key to it.
 	ecPubKey := privKey.PubKey()
 	managedAddr, err := newManagedAddressWithoutPrivKey(
-		s, derivationPath, ecPubKey, compressed, addrType,
+		s, derivationPath, ecPubKey, scanKey, compressed, addrType,
 	)
 	if err != nil {
 		return nil, err
@@ -684,11 +703,18 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 // will only have access to the public key.
 func newManagedAddressFromExtKey(s *ScopedKeyManager,
 	derivationPath DerivationPath, key *hdkeychain.ExtendedKey,
-	addrType AddressType, acctInfo *accountInfo) (*managedAddress, error) {
+	addrType AddressType, acctInfo *accountInfo) (managedAddr *managedAddress, err error) {
+
+	var scanPrivKey *btcec.PrivateKey
+	if acctInfo.scanKey != nil {
+		scanPrivKey, err = acctInfo.scanKey.ECPrivKey()
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Create a new managed address based on the public or private key
 	// depending on whether the generated key is private.
-	var managedAddr *managedAddress
 	if key.IsPrivate() {
 		privKey, err := key.ECPrivKey()
 		if err != nil {
@@ -698,7 +724,7 @@ func newManagedAddressFromExtKey(s *ScopedKeyManager,
 		// Ensure the temp private key big integer is cleared after
 		// use.
 		managedAddr, err = newManagedAddress(
-			s, derivationPath, privKey, true, addrType, acctInfo,
+			s, derivationPath, privKey, scanPrivKey, true, addrType, acctInfo,
 		)
 		if err != nil {
 			return nil, err
@@ -710,7 +736,7 @@ func newManagedAddressFromExtKey(s *ScopedKeyManager,
 		}
 
 		managedAddr, err = newManagedAddressWithoutPrivKey(
-			s, derivationPath, pubKey, true,
+			s, derivationPath, pubKey, scanPrivKey, true,
 			addrType,
 		)
 		if err != nil {

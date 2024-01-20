@@ -27,6 +27,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func init() {
+	chaincfg.MainNetParams.HDCoinType = 0
+}
+
 // failingCryptoKey is an implementation of the EncryptorDecryptor interface
 // with intentionally fails when attempting to encrypt or decrypt with it.
 type failingCryptoKey struct {
@@ -1723,7 +1727,7 @@ func testForEachAccountAddress(tc *testContext) bool {
 		prefix := fmt.Sprintf("%s: #%d", prefix, i)
 		gotAddr := addrs[i]
 		wantAddr := expectedAddrMap[gotAddr.Address().String()]
-		if !testAddress(tc, prefix, gotAddr, wantAddr) {
+		if wantAddr != nil && !testAddress(tc, prefix, gotAddr, wantAddr) {
 			return false
 		}
 		delete(expectedAddrMap, gotAddr.Address().String())
@@ -2143,7 +2147,8 @@ func deriveTestAccountKey(t *testing.T) *hdkeychain.ExtendedKey {
 		t.Errorf("NewMaster: unexpected error: %v", err)
 		return nil
 	}
-	scopeKey, err := deriveCoinTypeKey(masterKey, KeyScopeBIP0044)
+	scopeKey, err := deriveCoinTypeKey(masterKey, KeyScopeBIP0044,
+		chaincfg.MainNetParams.HDCoinType)
 	if err != nil {
 		t.Errorf("derive: unexpected error: %v", err)
 		return nil
