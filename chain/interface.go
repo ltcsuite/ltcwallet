@@ -108,6 +108,13 @@ type (
 		Block    *wtxmgr.BlockMeta // nil if unmined
 	}
 
+	// MwebUtxos is a notification of new MWEB utxos.
+	MwebUtxos struct {
+		Leafset []byte
+		Utxos   []*wire.MwebNetUtxo
+		Block   *wtxmgr.BlockMeta // nil if unmined
+	}
+
 	// RescanProgress is a notification describing the current status
 	// of an in-progress rescan.
 	RescanProgress struct {

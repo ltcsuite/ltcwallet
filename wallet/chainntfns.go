@@ -9,9 +9,13 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
@@ -190,6 +194,13 @@ func (w *Wallet) handleChainNotifications() {
 					})
 				}
 				notificationName = "filtered block connected"
+			case chain.MwebUtxos:
+				if len(n.Utxos) > 0 {
+					err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+						return w.checkMwebUtxos(tx, &n)
+					})
+				}
+				notificationName = "mweb utxos"
 
 			// The following require some database maintenance, but also
 			// need to be reported to the wallet's rescan goroutine.
@@ -424,6 +435,90 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	}
 
 	return nil
+}
+
+func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
+
+	for _, scope := range w.Manager.ScopesForExternalAddrType(waddrmgr.Mweb) {
+		s, err := w.Manager.FetchScopedKeyManager(scope)
+		if err != nil {
+			return err
+		}
+		s.ForEachAccount(addrmgrNs, func(account uint32) error {
+			props, err := s.AccountProperties(addrmgrNs, account)
+			if err != nil || props.AccountScanKey == nil {
+				return err
+			}
+			scanKeyPriv, err := props.AccountScanKey.ECPrivKey()
+			if err != nil {
+				return err
+			}
+			defer scanKeyPriv.Zero()
+			scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
+			defer zero.Bytes(scanSecret[:])
+
+			for _, utxo := range n.Utxos {
+				// Check output to determine whether it is controlled by a wallet
+				// key.  If so, mark the output as a credit.
+				coin, err := mweb.RewindOutput(utxo.Output, scanSecret)
+				if err != nil {
+					continue
+				}
+				addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+
+				ma, err := w.Manager.Address(addrmgrNs, addr)
+				if err != nil {
+					// Missing addresses are skipped.  Other errors should
+					// be propagated.
+					if waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
+						continue
+					}
+					return err
+				}
+
+				rec := &wtxmgr.TxRecord{
+					MsgTx: wire.MsgTx{
+						TxIn: []*wire.TxIn{{}},
+						TxOut: []*wire.TxOut{{
+							Value:    int64(coin.Value),
+							PkScript: addr.ScriptAddress(),
+						}},
+					},
+					Hash:     *utxo.OutputId,
+					Received: n.Block.Time,
+				}
+				exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, n.Block)
+				if err != nil || exists {
+					return err
+				}
+				err = w.TxStore.AddCredit(txmgrNs, rec, n.Block, 0, ma.Internal())
+				if err != nil {
+					return err
+				}
+				err = w.Manager.MarkUsed(addrmgrNs, addr)
+				if err != nil {
+					return err
+				}
+				log.Debugf("Marked address %v used", addr)
+
+				details, err := w.TxStore.UniqueTxDetails(txmgrNs, &rec.Hash, &n.Block.Block)
+				if err != nil {
+					log.Errorf("Cannot query transaction details for notification: %v", err)
+				}
+
+				// We'll only notify the transaction if it was found within the
+				// wallet's set of confirmed transactions.
+				if details != nil {
+					w.NtfnServer.notifyMinedTransaction(dbtx, details, n.Block)
+				}
+			}
+			return nil
+		})
+	}
+
+	return addrmgrNs.Put([]byte("mwebLeafset"), n.Leafset)
 }
 
 // chainConn is an interface that abstracts the chain connection logic required

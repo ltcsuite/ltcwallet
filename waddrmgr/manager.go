@@ -208,6 +208,10 @@ type AccountProperties struct {
 	// NOTE: This may be nil for imported accounts.
 	AccountPubKey *hdkeychain.ExtendedKey
 
+	// ScanKey is the account's scan private key that can be used to
+	// check for any MWEB outputs relevant to said account.
+	AccountScanKey *hdkeychain.ExtendedKey
+
 	// MasterKeyFingerprint represents the fingerprint of the root key
 	// corresponding to the master public key (also known as the key with
 	// derivation path m/). This may be required by some hardware wallets
