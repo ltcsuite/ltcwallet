@@ -681,6 +681,7 @@ func (s *ScopedKeyManager) AccountProperties(ns walletdb.ReadBucket,
 		props.ExternalKeyCount = acctInfo.nextExternalIndex
 		props.InternalKeyCount = acctInfo.nextInternalIndex
 		props.AccountPubKey = acctInfo.acctKeyPub
+		props.AccountScanKey = acctInfo.scanKey
 		props.MasterKeyFingerprint = acctInfo.masterKeyFingerprint
 		props.IsWatchOnly = s.rootManager.WatchOnly() ||
 			acctInfo.acctKeyPriv == nil

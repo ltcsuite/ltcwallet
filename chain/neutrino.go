@@ -95,6 +95,8 @@ func (s *NeutrinoClient) BackEnd() string {
 // Start replicates the RPC client's Start method.
 func (s *NeutrinoClient) Start() error {
 	s.CS.RegisterMempoolCallback(s.onRecvTx)
+	s.CS.RegisterMwebUtxosCallback(s.onMwebUtxos)
+
 	if err := s.CS.Start(); err != nil {
 		return fmt.Errorf("error starting chain service: %v", err)
 	}
@@ -812,6 +814,13 @@ func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx, block *btcjson.BlockDetails) {
 	}
 	select {
 	case s.enqueueNotification <- RelevantTx{rec, nil}:
+	case <-s.quit:
+	}
+}
+
+func (s *NeutrinoClient) onMwebUtxos(utxos []*wire.MwebOutput) {
+	select {
+	case s.enqueueNotification <- MwebUtxos{utxos}:
 	case <-s.quit:
 	}
 }

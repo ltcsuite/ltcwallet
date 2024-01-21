@@ -9,9 +9,13 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
@@ -190,6 +194,13 @@ func (w *Wallet) handleChainNotifications() {
 					})
 				}
 				notificationName = "filtered block connected"
+			case chain.MwebUtxos:
+				if len(n.Utxos) > 0 {
+					err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+						return w.checkMwebOutputs(tx, n.Utxos)
+					})
+				}
+				notificationName = "mweb utxos"
 
 			// The following require some database maintenance, but also
 			// need to be reported to the wallet's rescan goroutine.
@@ -421,6 +432,68 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 		if details != nil {
 			w.NtfnServer.notifyMinedTransaction(dbtx, details, block)
 		}
+	}
+
+	return nil
+}
+
+func (w *Wallet) checkMwebOutputs(dbtx walletdb.ReadWriteTx,
+	outputs []*wire.MwebOutput) error {
+
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+
+	for _, scope := range w.Manager.ScopesForExternalAddrType(waddrmgr.Mweb) {
+		s, err := w.Manager.FetchScopedKeyManager(scope)
+		if err != nil {
+			return err
+		}
+		s.ForEachAccount(addrmgrNs, func(account uint32) error {
+			props, err := s.AccountProperties(addrmgrNs, account)
+			if err != nil || props.AccountScanKey == nil {
+				return err
+			}
+			scanKeyPriv, err := props.AccountScanKey.ECPrivKey()
+			if err != nil {
+				return err
+			}
+			defer scanKeyPriv.Zero()
+			scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
+			defer zero.Bytes(scanSecret[:])
+
+			for _, output := range outputs {
+				// Check output to determine whether it is controlled by a wallet
+				// key.  If so, mark the output as a credit.
+				coin, err := mweb.RewindOutput(output, scanSecret)
+				if err != nil {
+					continue
+				}
+				addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+
+				ma, err := w.Manager.Address(addrmgrNs, addr)
+				if err == nil {
+					fmt.Println(ma.Address())
+					// TODO: Credits should be added with the
+					// account they belong to, so wtxmgr is able to
+					// track per-account balances.
+					//err = w.TxStore.AddCredit(txmgrNs, rec, block, uint32(i), ma.Internal())
+					if err != nil {
+						return err
+					}
+					err = w.Manager.MarkUsed(addrmgrNs, addr)
+					if err != nil {
+						return err
+					}
+					log.Debugf("Marked address %v used", addr)
+				}
+
+				// Missing addresses are skipped.  Other errors should
+				// be propagated.
+				if !waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
+					return err
+				}
+			}
+			return nil
+		})
 	}
 
 	return nil
