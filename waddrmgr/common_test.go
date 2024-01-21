@@ -213,6 +213,91 @@ var (
 	// generated from the seed
 	expectedInternalAddrs = expectedAddrs[5:]
 
+	// expectedMwebAddrs is the list of expected MWEB addresses
+	// generated from the seed
+	expectedMwebAddrs = []expectedAddr{
+		{
+			address:     "ltcmweb1qqwq0kwggn9mjh48s4vlql66vhq34aq9er70dalswwp6p8nyfqftegq3mpf63hleancqyelvsguefcszq5ec66yjdsa9g05kum8xa34d77q9qdm8w",
+			addressHash: hexToBytes("56f589310b93de56fb2941729c567cd1c47f63e9"),
+			internal:    false,
+			compressed:  true,
+			imported:    false,
+			pubKey:      hexToBytes("023b0a751bff3d9e004cfd9047329c4040a671ad124d874a87d2dcd9cdd8d5bef0"),
+			privKey:     hexToBytes("097ff3dd1b2ef461cafc2e7ee4ec7bc7ff220a1941af4080398873a38ce2fcc7"),
+			privKeyWIF:  "T3NSgNPRQuBrzwP1UqvybsCxmpHxgGSwveZtTQW3hWGdcoyeA6T9",
+			derivationInfo: DerivationPath{
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           0,
+			},
+		},
+		{
+			address:     "ltcmweb1qqvyy5rms0faeq0v9vagypgn6r9yn03usxkmxp73mtcam53n9d386yqm8tvl4y8lm72d5s02pr0nuheq4zzq303pllpc2el9cxq2wk0eahu2zscaf",
+			addressHash: hexToBytes("2a99811dc77aac2c920156eda8e0d1884742e193"),
+			internal:    false,
+			compressed:  true,
+			imported:    false,
+			pubKey:      hexToBytes("03675b3f521ffbf29b483d411be7cbe415108117c43ff870acfcb83014eb3f3dbf"),
+			privKey:     hexToBytes("eab71dee1b305a362fe98ae9fd182bbcdfefaf5acea9dc24f9a9988145edbf10"),
+			privKeyWIF:  "TAvEUAGyjHw9cmtvmDecnZiX2KBgHd2JkQKyVaPEwRjekZJih1FN",
+			derivationInfo: DerivationPath{
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           1,
+			},
+		},
+		{
+			address:     "ltcmweb1qqty98evksf46twze0yhmdzxfxt2u5hsphjccjm33f4wksjvemwsfuqk8pdgcjz2aghpuhn947wskxhxcquhhx8y4f4sh4r365mlmpj6cq584w0xs",
+			addressHash: hexToBytes("c4ceac9fa0679db916251fb4e76a855b581f1891"),
+			internal:    false,
+			compressed:  true,
+			imported:    false,
+			pubKey:      hexToBytes("02c70b5189095d45c3cbccb5f3a1635cd8072f731c954d617a8e3aa6ffb0cb5805"),
+			privKey:     hexToBytes("d38ea91fbbd30fa137c1d8417830ccb56b111064bebd6c1d937332c80183b7bb"),
+			privKeyWIF:  "TA9DXhfwwMTpLoKo1sPDVPthoJgvwRNTdVTATZmpU6TRJELuu6GS",
+			derivationInfo: DerivationPath{
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           2,
+			},
+		},
+		{
+			address:     "ltcmweb1qqv3k7h8rr430g9dfv4k0zwm24fs7pq2we8spdqcre6c9rn3wh7jdxqnk5jks4zvuyrx5acvwzxya92qhfwq9wa6wq60wrj2mslyqfm2f8s3snmjn",
+			addressHash: hexToBytes("589535d6187b55d4e8463f00081c788332bf0d57"),
+			internal:    false,
+			compressed:  true,
+			imported:    false,
+			pubKey:      hexToBytes("0276a4ad0a899c20cd4ee18e1189d2a8174b8057774e069ee1c95b87c804ed493c"),
+			privKey:     hexToBytes("bede8d40316af67b8fedc84e80ad17b265fb10b72db5251bd566df4fcea288e2"),
+			privKeyWIF:  "T9T15i4pFiegQpod9AhNFMtkpj3MkPcVPypr3QLmBb8ocuXjPKse",
+			derivationInfo: DerivationPath{
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           3,
+			},
+		},
+		{
+			address:     "ltcmweb1qqtqqu3xrzv6v6zyjhvcudvpwf2mgu2hpqc5hndw68mjmmzurrnx36q348f3epm44rssxhrg23gteldsn9wlqjs6txmhlc2sa8za6uc0e6gnz5egd",
+			addressHash: hexToBytes("49a79439a3ba6cae642c36325370e032279fd385"),
+			internal:    false,
+			compressed:  true,
+			imported:    false,
+			pubKey:      hexToBytes("02353a6390eeb51c206b8d0a8a179fb6132bbe09434b36effc2a1d38bbae61f9d2"),
+			privKey:     hexToBytes("95edf80a505e033c512a1e07f8cd77e84e9e2ce53309257b328de2c321ff0a2c"),
+			privKeyWIF:  "T85RMHZKnqyDYm7E24qwUHGvKpSPP3DH9UqXP3GzcH2UZTuBYdKk",
+			derivationInfo: DerivationPath{
+				InternalAccount: 0,
+				Account:         hdkeychain.HardenedKeyStart,
+				Branch:          0,
+				Index:           4,
+			},
+		},
+	}
+
 	// defaultDBTimeout specifies the timeout value when opening the wallet
 	// database.
 	defaultDBTimeout = 10 * time.Second
