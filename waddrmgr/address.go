@@ -299,7 +299,7 @@ func (a *managedAddress) AddrHash() []byte {
 	case *ltcutil.AddressTaproot:
 		hash = n.WitnessProgram()
 	case *ltcutil.AddressMweb:
-		hash = n.ScriptAddress()
+		hash = ltcutil.Hash160(n.ScriptAddress())
 	}
 
 	return hash
