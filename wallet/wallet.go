@@ -339,7 +339,9 @@ func (w *Wallet) SetChainSynced(synced bool) {
 // activeData returns the currently-active receiving addresses and all unspent
 // outputs.  This is primarely intended to provide the parameters for a
 // rescan request.
-func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtxmgr.Credit, error) {
+func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) (
+	[]ltcutil.Address, []wtxmgr.Credit, []byte, error) {
+
 	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
@@ -351,8 +353,10 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtx
 		},
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+
+	leafset := addrmgrNs.Get([]byte("mwebLeafset"))
 
 	// Before requesting the list of spendable UTXOs, we'll delete any
 	// expired output locks.
@@ -360,11 +364,11 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtx
 		dbtx.ReadWriteBucket(wtxmgrNamespaceKey),
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	unspent, err := w.TxStore.UnspentOutputs(txmgrNs)
-	return addrs, unspent, err
+	return addrs, unspent, leafset, err
 }
 
 // syncWithChain brings the wallet up to date with the current chain server
@@ -541,13 +545,20 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 	var (
 		addrs   []ltcutil.Address
 		unspent []wtxmgr.Credit
+		leafset []byte
 	)
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
-		addrs, unspent, err = w.activeData(dbtx)
+		addrs, unspent, leafset, err = w.activeData(dbtx)
 		return err
 	})
 	if err != nil {
 		return err
+	}
+
+	if s, ok := chainClient.(*chain.NeutrinoClient); ok {
+		if err = s.CS.NotifyAddedMwebUtxos(leafset); err != nil {
+			return err
+		}
 	}
 
 	return w.rescanWithTarget(addrs, unspent, nil)

@@ -197,7 +197,7 @@ func (w *Wallet) handleChainNotifications() {
 			case chain.MwebUtxos:
 				if len(n.Utxos) > 0 {
 					err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
-						return w.checkMwebUtxos(tx, n.Utxos)
+						return w.checkMwebUtxos(tx, n.Leafset, n.Utxos)
 					})
 				}
 				notificationName = "mweb utxos"
@@ -438,7 +438,7 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 }
 
 func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
-	utxos []*wire.MwebNetUtxo) error {
+	leafset []byte, utxos []*wire.MwebNetUtxo) error {
 
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 
@@ -496,7 +496,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
 		})
 	}
 
-	return nil
+	return addrmgrNs.Put([]byte("mwebLeafset"), leafset)
 }
 
 // chainConn is an interface that abstracts the chain connection logic required

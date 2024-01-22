@@ -94,9 +94,6 @@ func (s *NeutrinoClient) BackEnd() string {
 
 // Start replicates the RPC client's Start method.
 func (s *NeutrinoClient) Start() error {
-	s.CS.RegisterMempoolCallback(s.onRecvTx)
-	s.CS.RegisterMwebUtxosCallback(s.onMwebUtxos)
-
 	if err := s.CS.Start(); err != nil {
 		return fmt.Errorf("error starting chain service: %v", err)
 	}
@@ -484,6 +481,10 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 // NotifyBlocks replicates the RPC client's NotifyBlocks command.
 func (s *NeutrinoClient) NotifyBlocks() error {
 	s.clientMtx.Lock()
+
+	s.CS.RegisterMempoolCallback(s.onRecvTx)
+	s.CS.RegisterMwebUtxosCallback(s.onMwebUtxos)
+
 	// If we're scanning, we're already notifying on blocks. Otherwise,
 	// start a rescan without watching any addresses.
 	if !s.scanning {
@@ -818,9 +819,9 @@ func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx, block *btcjson.BlockDetails) {
 	}
 }
 
-func (s *NeutrinoClient) onMwebUtxos(utxos []*wire.MwebNetUtxo) {
+func (s *NeutrinoClient) onMwebUtxos(leafset []byte, utxos []*wire.MwebNetUtxo) {
 	select {
-	case s.enqueueNotification <- MwebUtxos{utxos}:
+	case s.enqueueNotification <- MwebUtxos{leafset, utxos}:
 	case <-s.quit:
 	}
 }
