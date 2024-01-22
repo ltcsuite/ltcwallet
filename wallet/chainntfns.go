@@ -197,7 +197,7 @@ func (w *Wallet) handleChainNotifications() {
 			case chain.MwebUtxos:
 				if len(n.Utxos) > 0 {
 					err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
-						return w.checkMwebOutputs(tx, n.Utxos)
+						return w.checkMwebUtxos(tx, n.Utxos)
 					})
 				}
 				notificationName = "mweb utxos"
@@ -437,8 +437,8 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	return nil
 }
 
-func (w *Wallet) checkMwebOutputs(dbtx walletdb.ReadWriteTx,
-	outputs []*wire.MwebOutput) error {
+func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
+	utxos []*wire.MwebNetUtxo) error {
 
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 
@@ -460,10 +460,10 @@ func (w *Wallet) checkMwebOutputs(dbtx walletdb.ReadWriteTx,
 			scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
 			defer zero.Bytes(scanSecret[:])
 
-			for _, output := range outputs {
+			for _, utxo := range utxos {
 				// Check output to determine whether it is controlled by a wallet
 				// key.  If so, mark the output as a credit.
-				coin, err := mweb.RewindOutput(output, scanSecret)
+				coin, err := mweb.RewindOutput(utxo.Output, scanSecret)
 				if err != nil {
 					continue
 				}

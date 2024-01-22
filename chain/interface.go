@@ -110,7 +110,7 @@ type (
 
 	// MwebUtxos is a notification of new MWEB utxos.
 	MwebUtxos struct {
-		Utxos []*wire.MwebOutput
+		Utxos []*wire.MwebNetUtxo
 	}
 
 	// RescanProgress is a notification describing the current status
