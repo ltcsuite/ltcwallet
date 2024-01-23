@@ -197,7 +197,7 @@ func (w *Wallet) handleChainNotifications() {
 			case chain.MwebUtxos:
 				if len(n.Utxos) > 0 {
 					err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
-						return w.checkMwebUtxos(tx, n.Leafset, n.Utxos)
+						return w.checkMwebUtxos(tx, &n)
 					})
 				}
 				notificationName = "mweb utxos"
@@ -437,20 +437,9 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	return nil
 }
 
-func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
-	leafset []byte, utxos []*wire.MwebNetUtxo) error {
-
+func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
-
-	blockHash, blockHeight, err := w.ChainClient().GetBestBlock()
-	if err != nil {
-		return err
-	}
-	blockHeader, err := w.ChainClient().GetBlockHeader(blockHash)
-	if err != nil {
-		return err
-	}
 
 	for _, scope := range w.Manager.ScopesForExternalAddrType(waddrmgr.Mweb) {
 		s, err := w.Manager.FetchScopedKeyManager(scope)
@@ -470,7 +459,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
 			scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
 			defer zero.Bytes(scanSecret[:])
 
-			for _, utxo := range utxos {
+			for _, utxo := range n.Utxos {
 				// Check output to determine whether it is controlled by a wallet
 				// key.  If so, mark the output as a credit.
 				coin, err := mweb.RewindOutput(utxo.Output, scanSecret)
@@ -498,17 +487,13 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
 						}},
 					},
 					Hash:     *utxo.OutputId,
-					Received: blockHeader.Timestamp,
+					Received: n.Block.Time,
 				}
-				block := &wtxmgr.BlockMeta{
-					Block: wtxmgr.Block{Hash: *blockHash, Height: blockHeight},
-					Time:  blockHeader.Timestamp,
-				}
-				exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, block)
+				exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, n.Block)
 				if err != nil || exists {
 					return err
 				}
-				err = w.TxStore.AddCredit(txmgrNs, rec, block, 0, ma.Internal())
+				err = w.TxStore.AddCredit(txmgrNs, rec, n.Block, 0, ma.Internal())
 				if err != nil {
 					return err
 				}
@@ -518,7 +503,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
 				}
 				log.Debugf("Marked address %v used", addr)
 
-				details, err := w.TxStore.UniqueTxDetails(txmgrNs, &rec.Hash, &block.Block)
+				details, err := w.TxStore.UniqueTxDetails(txmgrNs, &rec.Hash, &n.Block.Block)
 				if err != nil {
 					log.Errorf("Cannot query transaction details for notification: %v", err)
 				}
@@ -526,14 +511,14 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
 				// We'll only notify the transaction if it was found within the
 				// wallet's set of confirmed transactions.
 				if details != nil {
-					w.NtfnServer.notifyMinedTransaction(dbtx, details, block)
+					w.NtfnServer.notifyMinedTransaction(dbtx, details, n.Block)
 				}
 			}
 			return nil
 		})
 	}
 
-	return addrmgrNs.Put([]byte("mwebLeafset"), leafset)
+	return addrmgrNs.Put([]byte("mwebLeafset"), n.Leafset)
 }
 
 // chainConn is an interface that abstracts the chain connection logic required

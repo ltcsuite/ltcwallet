@@ -819,9 +819,11 @@ func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx, block *btcjson.BlockDetails) {
 	}
 }
 
-func (s *NeutrinoClient) onMwebUtxos(leafset []byte, utxos []*wire.MwebNetUtxo) {
+func (s *NeutrinoClient) onMwebUtxos(leafset []byte,
+	utxos []*wire.MwebNetUtxo, block *wtxmgr.BlockMeta) {
+
 	select {
-	case s.enqueueNotification <- MwebUtxos{leafset, utxos}:
+	case s.enqueueNotification <- MwebUtxos{leafset, utxos, block}:
 	case <-s.quit:
 	}
 }
