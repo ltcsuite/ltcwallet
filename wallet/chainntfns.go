@@ -441,6 +441,16 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
 	leafset []byte, utxos []*wire.MwebNetUtxo) error {
 
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
+
+	blockHash, blockHeight, err := w.ChainClient().GetBestBlock()
+	if err != nil {
+		return err
+	}
+	blockHeader, err := w.ChainClient().GetBlockHeader(blockHash)
+	if err != nil {
+		return err
+	}
 
 	for _, scope := range w.Manager.ScopesForExternalAddrType(waddrmgr.Mweb) {
 		s, err := w.Manager.FetchScopedKeyManager(scope)
@@ -470,26 +480,53 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx,
 				addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
 
 				ma, err := w.Manager.Address(addrmgrNs, addr)
-				if err == nil {
-					fmt.Println(ma.Address())
-					// TODO: Credits should be added with the
-					// account they belong to, so wtxmgr is able to
-					// track per-account balances.
-					//err = w.TxStore.AddCredit(txmgrNs, rec, block, uint32(i), ma.Internal())
-					if err != nil {
-						return err
+				if err != nil {
+					// Missing addresses are skipped.  Other errors should
+					// be propagated.
+					if waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
+						continue
 					}
-					err = w.Manager.MarkUsed(addrmgrNs, addr)
-					if err != nil {
-						return err
-					}
-					log.Debugf("Marked address %v used", addr)
+					return err
 				}
 
-				// Missing addresses are skipped.  Other errors should
-				// be propagated.
-				if !waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
+				rec := &wtxmgr.TxRecord{
+					MsgTx: wire.MsgTx{
+						TxIn: []*wire.TxIn{{}},
+						TxOut: []*wire.TxOut{{
+							Value:    int64(coin.Value),
+							PkScript: addr.ScriptAddress(),
+						}},
+					},
+					Hash:     *utxo.OutputId,
+					Received: blockHeader.Timestamp,
+				}
+				block := &wtxmgr.BlockMeta{
+					Block: wtxmgr.Block{Hash: *blockHash, Height: blockHeight},
+					Time:  blockHeader.Timestamp,
+				}
+				exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, block)
+				if err != nil || exists {
 					return err
+				}
+				err = w.TxStore.AddCredit(txmgrNs, rec, block, 0, ma.Internal())
+				if err != nil {
+					return err
+				}
+				err = w.Manager.MarkUsed(addrmgrNs, addr)
+				if err != nil {
+					return err
+				}
+				log.Debugf("Marked address %v used", addr)
+
+				details, err := w.TxStore.UniqueTxDetails(txmgrNs, &rec.Hash, &block.Block)
+				if err != nil {
+					log.Errorf("Cannot query transaction details for notification: %v", err)
+				}
+
+				// We'll only notify the transaction if it was found within the
+				// wallet's set of confirmed transactions.
+				if details != nil {
+					w.NtfnServer.notifyMinedTransaction(dbtx, details, block)
 				}
 			}
 			return nil

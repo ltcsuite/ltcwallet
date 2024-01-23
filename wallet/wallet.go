@@ -2838,6 +2838,8 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 					return err
 				}
 				spendable = true
+			case txscript.MwebTy:
+				spendable = true
 			}
 
 			result := &btcjson.ListUnspentResult{
