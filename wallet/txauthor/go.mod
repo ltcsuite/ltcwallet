@@ -1,6 +1,6 @@
 module github.com/ltcsuite/ltcwallet/wallet/txauthor
 
-go 1.12
+go 1.17
 
 require (
 	github.com/ltcsuite/ltcd v0.23.5

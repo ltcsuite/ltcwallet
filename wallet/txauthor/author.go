@@ -8,10 +8,15 @@ package txauthor
 import (
 	"errors"
 
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
 	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
 )
@@ -198,6 +203,7 @@ type SecretsSource interface {
 	txscript.KeyDB
 	txscript.ScriptDB
 	ChainParams() *chaincfg.Params
+	GetScanKey(ltcutil.Address) (*btcec.PrivateKey, error)
 }
 
 // AddAllInputScripts modifies transaction a transaction by adding inputs
@@ -456,4 +462,100 @@ func TXPrevOutFetcher(tx *wire.MsgTx, prevPkScripts [][]byte,
 	}
 
 	return fetcher, nil
+}
+
+func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
+	fetchUtxo func(*chainhash.Hash) (*wire.MwebOutput, error)) (err error) {
+
+	var (
+		chainParams = secrets.ChainParams()
+		txIns       []*wire.TxIn
+		pegouts     []*wire.TxOut
+		coins       []*mweb.Coin
+		recipients  []*mweb.Recipient
+		pegin       uint64
+		sumCoins    uint64
+		sumOutputs  uint64
+	)
+
+	for i, txIn := range tx.Tx.TxIn {
+		if !txscript.IsMweb(tx.PrevScripts[i]) {
+			txIns = append(txIns, txIn)
+			pegin += uint64(tx.PrevInputValues[i])
+			continue
+		}
+		output, err := fetchUtxo(&txIn.PreviousOutPoint.Hash)
+		if err != nil {
+			return err
+		}
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+			tx.PrevScripts[i], chainParams)
+		if err != nil {
+			return err
+		}
+		scanKeyPriv, err := secrets.GetScanKey(addrs[0])
+		if err != nil {
+			return err
+		}
+		defer scanKeyPriv.Zero()
+		scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
+		defer zero.Bytes(scanSecret[:])
+
+		coin, err := mweb.RewindOutput(output, scanSecret)
+		if err != nil {
+			return err
+		}
+		coins = append(coins, coin)
+		sumCoins += coin.Value
+
+		spendKeyPriv, _, err := secrets.GetKey(addrs[0])
+		if err != nil {
+			return err
+		}
+		defer spendKeyPriv.Zero()
+		spendSecret := (*mw.SecretKey)(spendKeyPriv.Serialize())
+		defer zero.Bytes(spendSecret[:])
+
+		coin.CalculateOutputKey(spendSecret)
+
+		tx.PrevScripts = append(tx.PrevScripts[:i], tx.PrevScripts[i+1:]...)
+		tx.PrevInputValues = append(tx.PrevInputValues[:i], tx.PrevInputValues[i+1:]...)
+	}
+
+	for _, txOut := range tx.Tx.TxOut {
+		sumOutputs += uint64(txOut.Value)
+		if !txscript.IsMweb(txOut.PkScript) {
+			pegouts = append(pegouts, txOut)
+			continue
+		}
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+			txOut.PkScript, chainParams)
+		if err != nil {
+			return err
+		}
+		recipients = append(recipients, &mweb.Recipient{
+			Value:   uint64(txOut.Value),
+			Address: addrs[0].(*ltcutil.AddressMweb).StealthAddress(),
+		})
+	}
+
+	tx.Tx.TxIn = txIns
+	tx.Tx.TxOut = nil
+	tx.Tx.Mweb, err = mweb.NewTransaction(coins, recipients,
+		sumCoins+pegin-sumOutputs, pegin, pegouts)
+	if err != nil {
+		return err
+	}
+
+	if pegin > 0 {
+		script, err := txscript.NewScriptBuilder().AddOp(txscript.OP_9).
+			AddData(tx.Tx.Mweb.TxBody.Kernels[0].Hash()[:]).Script()
+		if err != nil {
+			return err
+		}
+		tx.Tx.TxOut = []*wire.TxOut{{Value: int64(pegin), PkScript: script}}
+	}
+
+	tx.ChangeIndex = -1
+	return
 }

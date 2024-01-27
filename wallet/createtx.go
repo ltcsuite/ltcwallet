@@ -6,6 +6,7 @@
 package wallet
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
@@ -92,6 +94,18 @@ func (s secretSource) GetScript(addr ltcutil.Address) ([]byte, error) {
 		return nil, e
 	}
 	return msa.Script()
+}
+
+func (s secretSource) GetScanKey(addr ltcutil.Address) (*btcec.PrivateKey, error) {
+	sm, account, err := s.AddrAccount(s.addrmgrNs, addr)
+	if err != nil {
+		return nil, err
+	}
+	props, err := sm.AccountProperties(s.addrmgrNs, account)
+	if err != nil {
+		return nil, err
+	}
+	return props.AccountScanKey.ECPrivKey()
 }
 
 // txToOutputs creates a signed transaction which includes each output from
@@ -219,9 +233,19 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			return err
 		}
 		if !watchOnly {
-			err = tx.AddAllInputScripts(
-				secretSource{w.Manager, addrmgrNs},
-			)
+			secrets := secretSource{w.Manager, addrmgrNs}
+
+			nc, ok := chainClient.(*chain.NeutrinoClient)
+			if !ok {
+				return errors.New("cannot access mweb coin db")
+			}
+
+			err = tx.AddMweb(secrets, nc.CS.MwebCoinDB.FetchCoin)
+			if err != nil {
+				return err
+			}
+
+			err = tx.AddAllInputScripts(secrets)
 			if err != nil {
 				return err
 			}
