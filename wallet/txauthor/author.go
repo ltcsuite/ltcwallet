@@ -98,11 +98,21 @@ type ChangeSource struct {
 func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 	fetchInputs InputSource, changeSource *ChangeSource) (*AuthoredTx, error) {
 
+	changeScript, err := changeSource.NewScript()
+	if err != nil {
+		return nil, err
+	}
+
 	targetAmount := SumOutputValues(outputs)
 	estimatedSize := txsizes.EstimateVirtualSize(
 		0, 0, 1, 0, outputs, changeSource.ScriptSize,
 	)
 	targetFee := txrules.FeeForSerializeSize(feeRatePerKb, estimatedSize)
+	mwebFee := mweb.EstimateFee(append(outputs,
+		&wire.TxOut{PkScript: changeScript}), feeRatePerKb)
+	if mwebFee > uint64(targetFee) {
+		targetFee = ltcutil.Amount(mwebFee)
+	}
 
 	for {
 		inputAmount, inputs, inputValues, scripts, err := fetchInputs(targetAmount + targetFee)
@@ -115,7 +125,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 
 		// We count the types of inputs, which we'll use to estimate
 		// the vsize of the transaction.
-		var nested, p2wpkh, p2tr, p2pkh int
+		var nested, p2wpkh, p2tr, mweb, p2pkh int
 		for _, pkScript := range scripts {
 			switch {
 			// If this is a p2sh output, we assume this is a
@@ -126,6 +136,8 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 				p2wpkh++
 			case txscript.IsPayToTaproot(pkScript):
 				p2tr++
+			case txscript.IsMweb(pkScript):
+				mweb++
 			default:
 				p2pkh++
 			}
@@ -135,6 +147,13 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			p2pkh, p2tr, p2wpkh, nested, outputs, changeSource.ScriptSize,
 		)
 		maxRequiredFee := txrules.FeeForSerializeSize(feeRatePerKb, maxSignedSize)
+
+		if mweb == len(inputs) {
+			maxRequiredFee = ltcutil.Amount(mwebFee)
+		} else {
+			maxRequiredFee += ltcutil.Amount(mwebFee)
+		}
+
 		remainingAmount := inputAmount - targetAmount
 		if remainingAmount < maxRequiredFee {
 			targetFee = maxRequiredFee
@@ -150,10 +169,6 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 
 		changeIndex := -1
 		changeAmount := inputAmount - targetAmount - maxRequiredFee
-		changeScript, err := changeSource.NewScript()
-		if err != nil {
-			return nil, err
-		}
 		change := wire.NewTxOut(int64(changeAmount), changeScript)
 		if changeAmount != 0 && !txrules.IsDustOutput(change,
 			txrules.DefaultRelayFeePerKb) {
@@ -464,8 +479,10 @@ func TXPrevOutFetcher(tx *wire.MsgTx, prevPkScripts [][]byte,
 	return fetcher, nil
 }
 
+type utxoFetcher func(*chainhash.Hash) (*wire.MwebOutput, error)
+
 func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
-	fetchUtxo func(*chainhash.Hash) (*wire.MwebOutput, error)) (err error) {
+	fetchUtxo utxoFetcher, feeRatePerKb ltcutil.Amount) (err error) {
 
 	var (
 		chainParams = secrets.ChainParams()
@@ -473,7 +490,8 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 		pegouts     []*wire.TxOut
 		coins       []*mweb.Coin
 		recipients  []*mweb.Recipient
-		pegin       uint64
+		prevScripts [][]byte
+		prevValues  []ltcutil.Amount
 		sumCoins    uint64
 		sumOutputs  uint64
 	)
@@ -481,7 +499,8 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 	for i, txIn := range tx.Tx.TxIn {
 		if !txscript.IsMweb(tx.PrevScripts[i]) {
 			txIns = append(txIns, txIn)
-			pegin += uint64(tx.PrevInputValues[i])
+			prevScripts = append(prevScripts, tx.PrevScripts[i])
+			prevValues = append(prevValues, tx.PrevInputValues[i])
 			continue
 		}
 		output, err := fetchUtxo(&txIn.PreviousOutPoint.Hash)
@@ -517,9 +536,6 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 		defer zero.Bytes(spendSecret[:])
 
 		coin.CalculateOutputKey(spendSecret)
-
-		tx.PrevScripts = append(tx.PrevScripts[:i], tx.PrevScripts[i+1:]...)
-		tx.PrevInputValues = append(tx.PrevInputValues[:i], tx.PrevInputValues[i+1:]...)
 	}
 
 	for _, txOut := range tx.Tx.TxOut {
@@ -539,13 +555,28 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 		})
 	}
 
-	tx.Tx.TxIn = txIns
-	tx.Tx.TxOut = nil
-	tx.Tx.Mweb, err = mweb.NewTransaction(coins, recipients,
-		sumCoins+pegin-sumOutputs, pegin, pegouts)
+	if len(coins) == 0 && len(recipients) == 0 {
+		return
+	}
+
+	var fee, pegin uint64
+	if len(txIns) > 0 {
+		fee = mweb.EstimateFee(tx.Tx.TxOut, feeRatePerKb)
+		pegin = sumOutputs + fee - sumCoins
+	} else {
+		fee = sumCoins - sumOutputs
+	}
+
+	tx.Tx.Mweb, err = mweb.NewTransaction(coins, recipients, fee, pegin, pegouts)
 	if err != nil {
 		return err
 	}
+
+	tx.Tx.TxIn = txIns
+	tx.Tx.TxOut = nil
+	tx.PrevScripts = prevScripts
+	tx.PrevInputValues = prevValues
+	tx.ChangeIndex = -1
 
 	if pegin > 0 {
 		script, err := txscript.NewScriptBuilder().AddOp(txscript.OP_9).
@@ -556,6 +587,5 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 		tx.Tx.TxOut = []*wire.TxOut{{Value: int64(pegin), PkScript: script}}
 	}
 
-	tx.ChangeIndex = -1
 	return
 }

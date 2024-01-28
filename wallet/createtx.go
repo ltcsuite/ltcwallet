@@ -139,6 +139,20 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 
 	var tx *txauthor.AuthoredTx
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
+		allCanonical, allMweb := true, true
+		for _, txOut := range outputs {
+			if txscript.IsMweb(txOut.PkScript) {
+				allCanonical = false
+			} else {
+				allMweb = false
+			}
+		}
+
+		changeKeyScope := keyScope
+		if !allCanonical {
+			changeKeyScope = &waddrmgr.KeyScopeMweb
+		}
+
 		addrmgrNs, changeSource, err := w.addrMgrWithChangeSource(
 			dbtx, changeKeyScope, account,
 		)
@@ -153,12 +167,32 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			return err
 		}
 
+		var eligibleCanonical, eligibleMweb []wtxmgr.Credit
+		for _, credit := range eligible {
+			if txscript.IsMweb(credit.PkScript) {
+				eligibleMweb = append(eligibleMweb, credit)
+			} else {
+				eligibleCanonical = append(eligibleCanonical, credit)
+			}
+		}
+
 		var inputSource txauthor.InputSource
 
 		switch coinSelectionStrategy {
 		// Pick largest outputs first.
 		case CoinSelectionLargest:
-			sort.Sort(sort.Reverse(byAmount(eligible)))
+			if allCanonical || allMweb {
+				sort.Sort(sort.Reverse(byAmount(eligibleCanonical)))
+				sort.Sort(sort.Reverse(byAmount(eligibleMweb)))
+			}
+			switch {
+			case allCanonical:
+				eligible = append(eligibleCanonical, eligibleMweb...)
+			case allMweb:
+				eligible = append(eligibleMweb, eligibleCanonical...)
+			default:
+				sort.Sort(sort.Reverse(byAmount(eligible)))
+			}
 			inputSource = makeInputSource(eligible)
 
 		// Select coins at random. This prevents the creation of ever
@@ -168,7 +202,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			// Skip inputs that do not raise the total transaction
 			// output value at the requested fee rate.
 			var positivelyYielding []wtxmgr.Credit
-			for _, output := range eligible {
+			for _, output := range eligibleCanonical {
 				output := output
 
 				if !inputYieldsPositively(&output, feeSatPerKb) {
@@ -180,10 +214,25 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 				)
 			}
 
-			rand.Shuffle(len(positivelyYielding), func(i, j int) {
-				positivelyYielding[i], positivelyYielding[j] =
-					positivelyYielding[j], positivelyYielding[i]
-			})
+			shuffle := func(arr []wtxmgr.Credit) {
+				rand.Shuffle(len(arr), func(i, j int) {
+					arr[i], arr[j] = arr[j], arr[i]
+				})
+			}
+
+			if allCanonical || allMweb {
+				shuffle(positivelyYielding)
+				shuffle(eligibleMweb)
+			}
+			switch {
+			case allCanonical:
+				positivelyYielding = append(positivelyYielding, eligibleMweb...)
+			case allMweb:
+				positivelyYielding = append(eligibleMweb, positivelyYielding...)
+			default:
+				positivelyYielding = append(positivelyYielding, eligibleMweb...)
+				shuffle(positivelyYielding)
+			}
 
 			inputSource = makeInputSource(positivelyYielding)
 		}
@@ -240,7 +289,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 				return errors.New("cannot access mweb coin db")
 			}
 
-			err = tx.AddMweb(secrets, nc.CS.MwebCoinDB.FetchCoin)
+			err = tx.AddMweb(secrets, nc.CS.MwebCoinDB.FetchCoin, feeSatPerKb)
 			if err != nil {
 				return err
 			}
