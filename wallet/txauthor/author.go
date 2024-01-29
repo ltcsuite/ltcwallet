@@ -10,7 +10,6 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
@@ -34,8 +33,9 @@ func SumOutputValues(outputs []*wire.TxOut) (totalOutput ltcutil.Amount) {
 // can not be satisified, this can be signaled by returning a total amount less
 // than the target or by returning a more detailed error implementing
 // InputSourceError.
-type InputSource func(target ltcutil.Amount) (total ltcutil.Amount, inputs []*wire.TxIn,
-	inputValues []ltcutil.Amount, scripts [][]byte, err error)
+type InputSource func(target ltcutil.Amount) (total ltcutil.Amount,
+	inputs []*wire.TxIn, inputValues []ltcutil.Amount, scripts [][]byte,
+	mwebOutputs []*wire.MwebOutput, err error)
 
 // InputSourceError describes the failure to provide enough input value from
 // unspent transaction outputs to meet a target amount.  A typed error is used
@@ -61,6 +61,7 @@ type AuthoredTx struct {
 	Tx              *wire.MsgTx
 	PrevScripts     [][]byte
 	PrevInputValues []ltcutil.Amount
+	PrevMwebOutputs []*wire.MwebOutput
 	TotalInput      ltcutil.Amount
 	ChangeIndex     int // negative if no change
 }
@@ -115,7 +116,8 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 	}
 
 	for {
-		inputAmount, inputs, inputValues, scripts, err := fetchInputs(targetAmount + targetFee)
+		inputAmount, inputs, inputValues, scripts, mwebOutputs,
+			err := fetchInputs(targetAmount + targetFee)
 		if err != nil {
 			return nil, err
 		}
@@ -182,6 +184,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			Tx:              unsignedTransaction,
 			PrevScripts:     scripts,
 			PrevInputValues: inputValues,
+			PrevMwebOutputs: mwebOutputs,
 			TotalInput:      inputAmount,
 			ChangeIndex:     changeIndex,
 		}, nil
@@ -479,10 +482,8 @@ func TXPrevOutFetcher(tx *wire.MsgTx, prevPkScripts [][]byte,
 	return fetcher, nil
 }
 
-type utxoFetcher func(*chainhash.Hash) (*wire.MwebOutput, error)
-
 func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
-	fetchUtxo utxoFetcher, feeRatePerKb ltcutil.Amount) (err error) {
+	feeRatePerKb ltcutil.Amount) (err error) {
 
 	var (
 		chainParams = secrets.ChainParams()
@@ -503,10 +504,6 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 			prevValues = append(prevValues, tx.PrevInputValues[i])
 			continue
 		}
-		output, err := fetchUtxo(&txIn.PreviousOutPoint.Hash)
-		if err != nil {
-			return err
-		}
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
 			tx.PrevScripts[i], chainParams)
 		if err != nil {
@@ -520,7 +517,7 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 		scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
 		defer zero.Bytes(scanSecret[:])
 
-		coin, err := mweb.RewindOutput(output, scanSecret)
+		coin, err := mweb.RewindOutput(tx.PrevMwebOutputs[i], scanSecret)
 		if err != nil {
 			return err
 		}
