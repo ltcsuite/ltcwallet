@@ -1024,6 +1024,18 @@ func deleteRawUnmined(ns walletdb.ReadWriteBucket, k []byte) error {
 	return nil
 }
 
+func forEachRawUnmined(ns walletdb.ReadBucket, f func(*wire.MsgTx)) error {
+	return ns.NestedReadBucket(bucketUnmined).ForEach(func(k, v []byte) error {
+		var tx wire.MsgTx
+		err := tx.Deserialize(bytes.NewBuffer(v))
+		if err != nil {
+			return err
+		}
+		f(&tx)
+		return nil
+	})
+}
+
 // Unmined transaction credits use the canonical serialization format:
 //
 //  [0:32]   Transaction hash (32 bytes)
