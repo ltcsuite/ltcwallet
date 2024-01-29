@@ -55,6 +55,16 @@ func (s *Store) insertMemPoolTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 		}
 	}
 
+	if rec.MsgTx.Mweb != nil {
+		for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
+			k := canonicalOutPoint(&input.OutputId, 0)
+			err = putRawUnminedInput(ns, k, rec.Hash[:])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	// TODO: increment credit amount for each credit (but those are unknown
 	// here currently).
 

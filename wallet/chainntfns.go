@@ -439,6 +439,7 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 
 func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
 	chainClient, err := w.requireChainClient()
 	if err != nil {
@@ -485,6 +486,10 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 					Time:  blockHeader.Timestamp,
 				}
 
+				txHash, err := w.TxStore.GetTxHashForMwebOutput(txmgrNs, utxo.Output)
+				if err != nil {
+					return err
+				}
 				rec := &wtxmgr.TxRecord{
 					MsgTx: wire.MsgTx{
 						TxIn: []*wire.TxIn{{}},
@@ -499,7 +504,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 							},
 						},
 					},
-					Hash:     *utxo.OutputId,
+					Hash:     txHash,
 					Received: blockHeader.Timestamp,
 				}
 

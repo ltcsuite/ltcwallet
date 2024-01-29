@@ -399,6 +399,24 @@ func (s *Store) RemoveUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	return s.removeConflict(ns, rec)
 }
 
+// GetTxHashForMwebOutput tries to find the transaction in the unmined bucket
+// that spends to the mweb output.
+func (s *Store) GetTxHashForMwebOutput(ns walletdb.ReadBucket,
+	output *wire.MwebOutput) (hash chainhash.Hash, err error) {
+
+	hash = *output.Hash()
+	err = forEachRawUnmined(ns, func(tx *wire.MsgTx) {
+		if tx.Mweb != nil {
+			for _, out := range tx.Mweb.TxBody.Outputs {
+				if *out.Hash() == *output.Hash() {
+					hash = tx.TxHash()
+				}
+			}
+		}
+	})
+	return
+}
+
 // insertMinedTx inserts a new transaction record for a mined transaction into
 // the database under the confirmed bucket. It guarantees that, if the
 // tranasction was previously unconfirmed, then it will take care of cleaning up
