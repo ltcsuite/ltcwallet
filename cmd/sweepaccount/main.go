@@ -181,8 +181,9 @@ func makeInputSource(outputs []btcjson.ListUnspentResult) txauthor.InputSource {
 		sourceErr = noInputValue{}
 	}
 
-	return func(ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn, []ltcutil.Amount, [][]byte, error) {
-		return totalInputValue, inputs, inputValues, nil, sourceErr
+	return func(ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn,
+		[]ltcutil.Amount, [][]byte, []*wire.MwebOutput, error) {
+		return totalInputValue, inputs, inputValues, nil, nil, sourceErr
 	}
 }
 
