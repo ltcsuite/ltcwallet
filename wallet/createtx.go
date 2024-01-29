@@ -6,7 +6,6 @@
 package wallet
 
 import (
-	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -15,7 +14,6 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
@@ -38,9 +36,10 @@ func makeInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 	currentInputs := make([]*wire.TxIn, 0, len(eligible))
 	currentScripts := make([][]byte, 0, len(eligible))
 	currentInputValues := make([]ltcutil.Amount, 0, len(eligible))
+	currentMwebOutputs := make([]*wire.MwebOutput, 0, len(eligible))
 
 	return func(target ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn,
-		[]ltcutil.Amount, [][]byte, error) {
+		[]ltcutil.Amount, [][]byte, []*wire.MwebOutput, error) {
 
 		for currentTotal < target && len(eligible) != 0 {
 			nextCredit := &eligible[0]
@@ -50,8 +49,10 @@ func makeInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 			currentInputs = append(currentInputs, nextInput)
 			currentScripts = append(currentScripts, nextCredit.PkScript)
 			currentInputValues = append(currentInputValues, nextCredit.Amount)
+			currentMwebOutputs = append(currentMwebOutputs, nextCredit.MwebOutput)
 		}
-		return currentTotal, currentInputs, currentInputValues, currentScripts, nil
+		return currentTotal, currentInputs, currentInputValues,
+			currentScripts, currentMwebOutputs, nil
 	}
 }
 
@@ -284,12 +285,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 		if !watchOnly {
 			secrets := secretSource{w.Manager, addrmgrNs}
 
-			nc, ok := chainClient.(*chain.NeutrinoClient)
-			if !ok {
-				return errors.New("cannot access mweb coin db")
-			}
-
-			err = tx.AddMweb(secrets, nc.CS.MwebCoinDB.FetchCoin, feeSatPerKb)
+			err = tx.AddMweb(secrets, feeSatPerKb)
 			if err != nil {
 				return err
 			}

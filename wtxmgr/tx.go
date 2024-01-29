@@ -178,6 +178,7 @@ type Credit struct {
 	BlockMeta
 	Amount       ltcutil.Amount
 	PkScript     []byte
+	MwebOutput   *wire.MwebOutput
 	Received     time.Time
 	FromCoinBase bool
 }
@@ -847,6 +848,12 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			PkScript:     txOut.PkScript,
 			Received:     rec.Received,
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
+		}
+		if rec.MsgTx.Mweb != nil {
+			outputs := rec.MsgTx.Mweb.TxBody.Outputs
+			if len(outputs) > 0 {
+				cred.MwebOutput = outputs[0]
+			}
 		}
 		unspent = append(unspent, cred)
 		return nil

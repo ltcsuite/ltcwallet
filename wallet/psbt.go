@@ -556,6 +556,7 @@ func constantInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 	currentInputs := make([]*wire.TxIn, 0, len(eligible))
 	currentScripts := make([][]byte, 0, len(eligible))
 	currentInputValues := make([]ltcutil.Amount, 0, len(eligible))
+	currentMwebOutputs := make([]*wire.MwebOutput, 0, len(eligible))
 
 	for _, credit := range eligible {
 		nextInput := wire.NewTxIn(&credit.OutPoint, nil, nil)
@@ -563,12 +564,13 @@ func constantInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 		currentInputs = append(currentInputs, nextInput)
 		currentScripts = append(currentScripts, credit.PkScript)
 		currentInputValues = append(currentInputValues, credit.Amount)
+		currentMwebOutputs = append(currentMwebOutputs, credit.MwebOutput)
 	}
 
 	return func(target ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn,
-		[]ltcutil.Amount, [][]byte, error) {
+		[]ltcutil.Amount, [][]byte, []*wire.MwebOutput, error) {
 
 		return currentTotal, currentInputs, currentInputValues,
-			currentScripts, nil
+			currentScripts, currentMwebOutputs, nil
 	}
 }
