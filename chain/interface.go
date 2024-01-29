@@ -112,7 +112,6 @@ type (
 	MwebUtxos struct {
 		Leafset []byte
 		Utxos   []*wire.MwebNetUtxo
-		Block   *wtxmgr.BlockMeta // nil if unmined
 	}
 
 	// RescanProgress is a notification describing the current status
