@@ -122,8 +122,17 @@ type credit struct {
 type TxRecord struct {
 	MsgTx        wire.MsgTx
 	Hash         chainhash.Hash
+	UnminedHash  chainhash.Hash
 	Received     time.Time
 	SerializedTx []byte // Optional: may be nil
+}
+
+func (rec *TxRecord) GetUnminedHash() *chainhash.Hash {
+	var zero chainhash.Hash
+	if rec.UnminedHash != zero {
+		return &rec.UnminedHash
+	}
+	return &rec.Hash
 }
 
 // LockedOutput is a type that contains an outpoint of an UTXO and its lock
@@ -343,18 +352,18 @@ func (s *Store) deleteUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	for _, input := range rec.MsgTx.TxIn {
 		prevOut := input.PreviousOutPoint
 		k := canonicalOutPoint(&prevOut.Hash, prevOut.Index)
-		if err := deleteRawUnminedInput(ns, k, rec.Hash); err != nil {
+		if err := deleteRawUnminedInput(ns, k, *rec.GetUnminedHash()); err != nil {
 			return err
 		}
 	}
 	for i := range rec.MsgTx.TxOut {
-		k := canonicalOutPoint(&rec.Hash, uint32(i))
+		k := canonicalOutPoint(rec.GetUnminedHash(), uint32(i))
 		if err := deleteRawUnminedCredit(ns, k); err != nil {
 			return err
 		}
 	}
 
-	return deleteRawUnmined(ns, rec.Hash[:])
+	return deleteRawUnmined(ns, rec.GetUnminedHash()[:])
 }
 
 // InsertTx records a transaction as belonging to a wallet's transaction
@@ -399,17 +408,16 @@ func (s *Store) RemoveUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	return s.removeConflict(ns, rec)
 }
 
-// GetTxHashForMwebOutput tries to find the transaction in the unmined bucket
+// GetTxForMwebOutput tries to find the transaction in the unmined bucket
 // that spends to the mweb output.
-func (s *Store) GetTxHashForMwebOutput(ns walletdb.ReadBucket,
-	output *wire.MwebOutput) (hash chainhash.Hash, err error) {
+func (s *Store) GetTxForMwebOutput(ns walletdb.ReadBucket,
+	output *wire.MwebOutput) (result *wire.MsgTx, err error) {
 
-	hash = *output.Hash()
 	err = forEachRawUnmined(ns, func(tx *wire.MsgTx) {
 		if tx.Mweb != nil {
 			for _, out := range tx.Mweb.TxBody.Outputs {
 				if *out.Hash() == *output.Hash() {
-					hash = tx.TxHash()
+					result = tx
 				}
 			}
 		}
@@ -460,7 +468,7 @@ func (s *Store) insertMinedTx(ns walletdb.ReadWriteBucket, rec *TxRecord,
 
 	// If this transaction previously existed within the store as unmined,
 	// we'll need to remove it from the unmined bucket.
-	if v := existsRawUnmined(ns, rec.Hash[:]); v != nil {
+	if v := existsRawUnmined(ns, rec.GetUnminedHash()[:]); v != nil {
 		log.Infof("Marking unconfirmed transaction %v mined in block %d",
 			&rec.Hash, block.Height)
 

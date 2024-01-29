@@ -465,8 +465,6 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 			defer zero.Bytes(scanSecret[:])
 
 			for _, utxo := range n.Utxos {
-				// Check output to determine whether it is controlled by a wallet
-				// key.  If so, mark the output as a credit.
 				coin, err := mweb.RewindOutput(utxo.Output, scanSecret)
 				if err != nil {
 					continue
@@ -486,26 +484,36 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 					Time:  blockHeader.Timestamp,
 				}
 
-				txHash, err := w.TxStore.GetTxHashForMwebOutput(txmgrNs, utxo.Output)
+				tx, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
 				if err != nil {
 					return err
 				}
-				rec := &wtxmgr.TxRecord{
-					MsgTx: wire.MsgTx{
+				var unminedHash chainhash.Hash
+				if tx != nil {
+					unminedHash = tx.TxHash()
+					for _, input := range tx.Mweb.TxBody.Inputs {
+						tx.TxIn = append(tx.TxIn, &wire.TxIn{
+							PreviousOutPoint: wire.OutPoint{Hash: input.OutputId},
+						})
+					}
+				} else {
+					tx = &wire.MsgTx{
 						TxIn: []*wire.TxIn{{}},
-						TxOut: []*wire.TxOut{{
-							Value:    int64(coin.Value),
-							PkScript: addr.ScriptAddress(),
+						Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
+							Outputs: []*wire.MwebOutput{utxo.Output},
+							Kernels: []*wire.MwebKernel{{}},
 						}},
-						Mweb: &wire.MwebTx{
-							TxBody: &wire.MwebTxBody{
-								Outputs: []*wire.MwebOutput{utxo.Output},
-								Kernels: []*wire.MwebKernel{{}},
-							},
-						},
-					},
-					Hash:     txHash,
-					Received: blockHeader.Timestamp,
+					}
+				}
+				tx.TxOut = append([]*wire.TxOut{{
+					Value:    int64(coin.Value),
+					PkScript: addr.ScriptAddress(),
+				}}, tx.TxOut...)
+				rec := &wtxmgr.TxRecord{
+					MsgTx:       *tx,
+					Hash:        *utxo.Output.Hash(),
+					UnminedHash: unminedHash,
+					Received:    blockHeader.Timestamp,
 				}
 
 				err = w.addRelevantTx(dbtx, rec, block)
