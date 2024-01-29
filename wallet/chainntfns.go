@@ -441,6 +441,11 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
+	chainClient, err := w.requireChainClient()
+	if err != nil {
+		return err
+	}
+
 	for _, scope := range w.Manager.ScopesForExternalAddrType(waddrmgr.Mweb) {
 		s, err := w.Manager.FetchScopedKeyManager(scope)
 		if err != nil {
@@ -478,6 +483,15 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 					return err
 				}
 
+				blockHash, err := chainClient.GetBlockHash(int64(utxo.Height))
+				if err != nil {
+					return err
+				}
+				blockHeader, err := chainClient.GetBlockHeader(blockHash)
+				if err != nil {
+					return err
+				}
+
 				rec := &wtxmgr.TxRecord{
 					MsgTx: wire.MsgTx{
 						TxIn: []*wire.TxIn{{}},
@@ -487,13 +501,18 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 						}},
 					},
 					Hash:     *utxo.OutputId,
-					Received: n.Block.Time,
+					Received: blockHeader.Timestamp,
 				}
-				exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, n.Block)
+				block := &wtxmgr.BlockMeta{
+					Block: wtxmgr.Block{Hash: *blockHash, Height: utxo.Height},
+					Time:  blockHeader.Timestamp,
+				}
+
+				exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, block)
 				if err != nil || exists {
 					return err
 				}
-				err = w.TxStore.AddCredit(txmgrNs, rec, n.Block, 0, ma.Internal())
+				err = w.TxStore.AddCredit(txmgrNs, rec, block, 0, ma.Internal())
 				if err != nil {
 					return err
 				}
@@ -503,7 +522,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 				}
 				log.Debugf("Marked address %v used", addr)
 
-				details, err := w.TxStore.UniqueTxDetails(txmgrNs, &rec.Hash, &n.Block.Block)
+				details, err := w.TxStore.UniqueTxDetails(txmgrNs, &rec.Hash, &block.Block)
 				if err != nil {
 					log.Errorf("Cannot query transaction details for notification: %v", err)
 				}
@@ -511,7 +530,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 				// We'll only notify the transaction if it was found within the
 				// wallet's set of confirmed transactions.
 				if details != nil {
-					w.NtfnServer.notifyMinedTransaction(dbtx, details, n.Block)
+					w.NtfnServer.notifyMinedTransaction(dbtx, details, block)
 				}
 			}
 			return nil
