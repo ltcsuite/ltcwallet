@@ -500,7 +500,7 @@ func (w *Wallet) extractCanonicalFromMweb(
 		rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *outpoint})
 	}
 
-	outpoints := make(map[*chainhash.Hash]uint32)
+	outpoints := make(map[chainhash.Hash]uint32)
 	err := w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
 		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
 			coin, err := mweb.RewindOutput(output, scanSecret)
@@ -508,7 +508,7 @@ func (w *Wallet) extractCanonicalFromMweb(
 				continue
 			}
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			outpoints[output.Hash()] = uint32(len(rec.MsgTx.TxOut))
+			outpoints[*output.Hash()] = uint32(len(rec.MsgTx.TxOut))
 			rec.MsgTx.AddTxOut(wire.NewTxOut(
 				int64(coin.Value), addr.ScriptAddress()))
 		}
@@ -534,7 +534,7 @@ func (w *Wallet) extractCanonicalFromMweb(
 	rec.Hash = blake3.Sum256(rec.SerializedTx)
 
 	for outputId, index := range outpoints {
-		w.TxStore.AddMwebOutpoint(txmgrNs, outputId,
+		w.TxStore.AddMwebOutpoint(txmgrNs, &outputId,
 			wire.NewOutPoint(&rec.Hash, index))
 	}
 

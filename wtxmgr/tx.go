@@ -430,7 +430,7 @@ func (s *Store) AddMwebOutpoint(ns walletdb.ReadWriteBucket,
 }
 
 // Get the synthetic outpoint for an mweb output if it exists.
-func (s *Store) GetMwebOutpoint(ns walletdb.ReadWriteBucket,
+func (s *Store) GetMwebOutpoint(ns walletdb.ReadBucket,
 	outputId *chainhash.Hash) (*wire.OutPoint, error) {
 
 	op, err := existsMwebOutpoint(ns, outputId)
@@ -446,10 +446,6 @@ func (s *Store) GetMwebOutpoint(ns walletdb.ReadWriteBucket,
 		v2 = existsRawUnminedCredit(ns, k)
 	)
 	if v1 == nil && v2 == nil {
-		err = deleteMwebOutpoint(ns, outputId)
-		if err != nil {
-			return nil, err
-		}
 		return nil, ErrUnknownOutput
 	}
 	return op, nil
@@ -906,9 +902,17 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
 		}
 		if rec.MsgTx.Mweb != nil {
-			outputs := rec.MsgTx.Mweb.TxBody.Outputs
-			if len(outputs) > 0 {
-				cred.MwebOutput = outputs[0]
+			for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+				outpoint, err := s.GetMwebOutpoint(ns, output.Hash())
+				switch err {
+				case ErrUnknownOutput:
+				case nil:
+					if *outpoint == op {
+						cred.MwebOutput = output
+					}
+				default:
+					return err
+				}
 			}
 		}
 		unspent = append(unspent, cred)
