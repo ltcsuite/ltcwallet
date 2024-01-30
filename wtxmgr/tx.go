@@ -410,7 +410,7 @@ func (s *Store) RemoveUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 func (s *Store) GetTxForMwebOutput(ns walletdb.ReadBucket,
 	output *wire.MwebOutput) (result *TxRecord, err error) {
 
-	err = forEachRawUnmined(ns, func(rec *TxRecord) {
+	err = forEachUnmined(ns, func(rec *TxRecord) {
 		if rec.MsgTx.Mweb != nil {
 			for _, out := range rec.MsgTx.Mweb.TxBody.Outputs {
 				if *out.Hash() == *output.Hash() {
