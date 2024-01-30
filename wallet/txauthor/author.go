@@ -16,6 +16,7 @@ import (
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/internal/zero"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
 	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
 )
@@ -70,7 +71,7 @@ type AuthoredTx struct {
 type ChangeSource struct {
 	// NewScript is a closure that produces unique change output scripts per
 	// invocation.
-	NewScript func() ([]byte, error)
+	NewScript func(*waddrmgr.KeyScope) ([]byte, error)
 
 	// ScriptSize is the size in bytes of scripts produced by `NewScript`.
 	ScriptSize int
@@ -99,18 +100,12 @@ type ChangeSource struct {
 func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 	fetchInputs InputSource, changeSource *ChangeSource) (*AuthoredTx, error) {
 
-	changeScript, err := changeSource.NewScript()
-	if err != nil {
-		return nil, err
-	}
-
 	targetAmount := SumOutputValues(outputs)
 	estimatedSize := txsizes.EstimateVirtualSize(
 		0, 0, 1, 0, outputs, changeSource.ScriptSize,
 	)
 	targetFee := txrules.FeeForSerializeSize(feeRatePerKb, estimatedSize)
-	mwebFee := mweb.EstimateFee(append(outputs,
-		&wire.TxOut{PkScript: changeScript}), feeRatePerKb)
+	mwebFee := mweb.EstimateFee(outputs, feeRatePerKb, true)
 	if mwebFee > uint64(targetFee) {
 		targetFee = ltcutil.Amount(mwebFee)
 	}
@@ -169,8 +164,16 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			LockTime: 0,
 		}
 
+		var changeKeyScope *waddrmgr.KeyScope
+		if mweb > 0 {
+			changeKeyScope = &waddrmgr.KeyScopeMweb
+		}
 		changeIndex := -1
 		changeAmount := inputAmount - targetAmount - maxRequiredFee
+		changeScript, err := changeSource.NewScript(changeKeyScope)
+		if err != nil {
+			return nil, err
+		}
 		change := wire.NewTxOut(int64(changeAmount), changeScript)
 		if changeAmount != 0 && !txrules.IsDustOutput(change,
 			txrules.DefaultRelayFeePerKb) {
@@ -558,7 +561,7 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 
 	var fee, pegin uint64
 	if len(txIns) > 0 {
-		fee = mweb.EstimateFee(tx.Tx.TxOut, feeRatePerKb)
+		fee = mweb.EstimateFee(tx.Tx.TxOut, feeRatePerKb, false)
 		pegin = sumOutputs + fee - sumCoins
 	} else {
 		fee = sumCoins - sumOutputs
