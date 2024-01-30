@@ -122,17 +122,9 @@ type credit struct {
 type TxRecord struct {
 	MsgTx        wire.MsgTx
 	Hash         chainhash.Hash
-	UnminedHash  chainhash.Hash
 	Received     time.Time
 	SerializedTx []byte // Optional: may be nil
-}
-
-func (rec *TxRecord) GetUnminedHash() *chainhash.Hash {
-	var zero chainhash.Hash
-	if rec.UnminedHash != zero {
-		return &rec.UnminedHash
-	}
-	return &rec.Hash
+	BroadcastTx  []byte // Optional: may be nil
 }
 
 // LockedOutput is a type that contains an outpoint of an UTXO and its lock
@@ -170,10 +162,15 @@ func NewTxRecordFromMsgTx(msgTx *wire.MsgTx, received time.Time) (*TxRecord, err
 		return nil, storeError(ErrInput, str, err)
 	}
 	rec := &TxRecord{
-		MsgTx:        *msgTx,
 		Received:     received,
 		SerializedTx: buf.Bytes(),
+		BroadcastTx:  buf.Bytes(),
 		Hash:         msgTx.TxHash(),
+	}
+	err = rec.MsgTx.Deserialize(buf)
+	if err != nil {
+		str := "failed to deserialize transaction"
+		return nil, storeError(ErrInput, str, err)
 	}
 
 	return rec, nil
@@ -352,18 +349,18 @@ func (s *Store) deleteUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	for _, input := range rec.MsgTx.TxIn {
 		prevOut := input.PreviousOutPoint
 		k := canonicalOutPoint(&prevOut.Hash, prevOut.Index)
-		if err := deleteRawUnminedInput(ns, k, *rec.GetUnminedHash()); err != nil {
+		if err := deleteRawUnminedInput(ns, k, rec.Hash); err != nil {
 			return err
 		}
 	}
 	for i := range rec.MsgTx.TxOut {
-		k := canonicalOutPoint(rec.GetUnminedHash(), uint32(i))
+		k := canonicalOutPoint(&rec.Hash, uint32(i))
 		if err := deleteRawUnminedCredit(ns, k); err != nil {
 			return err
 		}
 	}
 
-	return deleteRawUnmined(ns, rec.GetUnminedHash()[:])
+	return deleteRawUnmined(ns, rec.Hash[:])
 }
 
 // InsertTx records a transaction as belonging to a wallet's transaction
@@ -425,6 +422,39 @@ func (s *Store) GetTxForMwebOutput(ns walletdb.ReadBucket,
 	return
 }
 
+// Store a mapping from an mweb output to its synthetic outpoint.
+func (s *Store) AddMwebOutpoint(ns walletdb.ReadWriteBucket,
+	outputId *chainhash.Hash, outpoint *wire.OutPoint) error {
+
+	return putMwebOutpoint(ns, outputId, outpoint)
+}
+
+// Get the synthetic outpoint for an mweb output if it exists.
+func (s *Store) GetMwebOutpoint(ns walletdb.ReadWriteBucket,
+	outputId *chainhash.Hash) (*wire.OutPoint, error) {
+
+	op, err := existsMwebOutpoint(ns, outputId)
+	if err != nil {
+		return nil, err
+	}
+	if op == nil {
+		return nil, ErrUnknownOutput
+	}
+	var (
+		k  = canonicalOutPoint(&op.Hash, op.Index)
+		v1 = existsRawUnspent(ns, k)
+		v2 = existsRawUnminedCredit(ns, k)
+	)
+	if v1 == nil && v2 == nil {
+		err = deleteMwebOutpoint(ns, outputId)
+		if err != nil {
+			return nil, err
+		}
+		return nil, ErrUnknownOutput
+	}
+	return op, nil
+}
+
 // insertMinedTx inserts a new transaction record for a mined transaction into
 // the database under the confirmed bucket. It guarantees that, if the
 // tranasction was previously unconfirmed, then it will take care of cleaning up
@@ -468,7 +498,7 @@ func (s *Store) insertMinedTx(ns walletdb.ReadWriteBucket, rec *TxRecord,
 
 	// If this transaction previously existed within the store as unmined,
 	// we'll need to remove it from the unmined bucket.
-	if v := existsRawUnmined(ns, rec.GetUnminedHash()[:]); v != nil {
+	if v := existsRawUnmined(ns, rec.Hash[:]); v != nil {
 		log.Infof("Marking unconfirmed transaction %v mined in block %d",
 			&rec.Hash, block.Height)
 

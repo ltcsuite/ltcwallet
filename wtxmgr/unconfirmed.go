@@ -6,6 +6,8 @@
 package wtxmgr
 
 import (
+	"bytes"
+
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/walletdb"
@@ -52,16 +54,6 @@ func (s *Store) insertMemPoolTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 		err = putRawUnminedInput(ns, k, rec.Hash[:])
 		if err != nil {
 			return err
-		}
-	}
-
-	if rec.MsgTx.Mweb != nil {
-		for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
-			k := canonicalOutPoint(&input.OutputId, 0)
-			err = putRawUnminedInput(ns, k, rec.Hash[:])
-			if err != nil {
-				return err
-			}
 		}
 	}
 
@@ -186,7 +178,13 @@ func (s *Store) UnminedTxs(ns walletdb.ReadBucket) ([]*wire.MsgTx, error) {
 
 	txSet := make(map[chainhash.Hash]*wire.MsgTx, len(recSet))
 	for txHash, txRec := range recSet {
-		txSet[txHash] = &txRec.MsgTx
+		var tx wire.MsgTx
+		err = tx.Deserialize(bytes.NewReader(txRec.BroadcastTx))
+		if err == nil {
+			txSet[txHash] = &tx
+		} else {
+			txSet[txHash] = &txRec.MsgTx
+		}
 	}
 
 	return DependencySort(txSet), nil

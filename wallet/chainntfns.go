@@ -6,6 +6,7 @@ package wallet
 
 import (
 	"bytes"
+	"math"
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -19,6 +20,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
+	"lukechampine.com/blake3"
 )
 
 const (
@@ -330,6 +332,11 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
+	err := w.extractCanonicalFromMweb(dbtx, rec)
+	if err != nil {
+		return err
+	}
+
 	// At the moment all notified transactions are assumed to actually be
 	// relevant.  This assumption will not hold true when SPV support is
 	// added, but until then, simply insert the transaction because there
@@ -437,21 +444,15 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	return nil
 }
 
-func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
-	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
-	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
-
-	chainClient, err := w.requireChainClient()
-	if err != nil {
-		return err
-	}
+func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
+	fn func(*mw.SecretKey) error) error {
 
 	for _, scope := range w.Manager.ScopesForExternalAddrType(waddrmgr.Mweb) {
 		s, err := w.Manager.FetchScopedKeyManager(scope)
 		if err != nil {
 			return err
 		}
-		s.ForEachAccount(addrmgrNs, func(account uint32) error {
+		err = s.ForEachAccount(addrmgrNs, func(account uint32) error {
 			props, err := s.AccountProperties(addrmgrNs, account)
 			if err != nil || props.AccountScanKey == nil {
 				return err
@@ -463,67 +464,139 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 			defer scanKeyPriv.Zero()
 			scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
 			defer zero.Bytes(scanSecret[:])
+			return fn(scanSecret)
+		})
+		if err != nil {
+			return err
+		}
+	}
 
-			for _, utxo := range n.Utxos {
-				coin, err := mweb.RewindOutput(utxo.Output, scanSecret)
-				if err != nil {
-					continue
-				}
-				addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+	return nil
+}
 
-				blockHash, err := chainClient.GetBlockHash(int64(utxo.Height))
-				if err != nil {
-					return err
-				}
-				blockHeader, err := chainClient.GetBlockHeader(blockHash)
-				if err != nil {
-					return err
-				}
-				block := &wtxmgr.BlockMeta{
-					Block: wtxmgr.Block{Hash: *blockHash, Height: utxo.Height},
-					Time:  blockHeader.Timestamp,
-				}
+func (w *Wallet) extractCanonicalFromMweb(
+	dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord) error {
 
-				tx, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
-				if err != nil {
-					return err
-				}
-				var unminedHash chainhash.Hash
-				if tx != nil {
-					unminedHash = tx.TxHash()
-					for _, input := range tx.Mweb.TxBody.Inputs {
-						tx.TxIn = append(tx.TxIn, &wire.TxIn{
-							PreviousOutPoint: wire.OutPoint{Hash: input.OutputId},
-						})
-					}
-				} else {
-					tx = &wire.MsgTx{
-						TxIn: []*wire.TxIn{{}},
-						Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
-							Outputs: []*wire.MwebOutput{utxo.Output},
-							Kernels: []*wire.MwebKernel{{}},
-						}},
-					}
-				}
-				tx.TxOut = append([]*wire.TxOut{{
-					Value:    int64(coin.Value),
-					PkScript: addr.ScriptAddress(),
-				}}, tx.TxOut...)
-				rec := &wtxmgr.TxRecord{
-					MsgTx:       *tx,
-					Hash:        *utxo.Output.Hash(),
-					UnminedHash: unminedHash,
-					Received:    blockHeader.Timestamp,
-				}
+	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
-				err = w.addRelevantTx(dbtx, rec, block)
-				if err != nil {
-					return err
-				}
+	if rec.MsgTx.Mweb == nil {
+		return nil
+	}
+
+	kernels := rec.MsgTx.Mweb.TxBody.Kernels
+	if len(kernels) > 0 {
+		// Check for sentinel kernel
+		if kernels[len(kernels)-1].Fee == math.MaxUint64 {
+			return nil
+		}
+	}
+
+	for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
+		outpoint, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
+		if err != nil {
+			continue
+		}
+		rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *outpoint})
+	}
+
+	outpoints := make(map[*chainhash.Hash]uint32)
+	err := w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
+		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+			coin, err := mweb.RewindOutput(output, scanSecret)
+			if err != nil {
+				continue
+			}
+			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+			outpoints[output.Hash()] = uint32(len(rec.MsgTx.TxOut))
+			rec.MsgTx.AddTxOut(wire.NewTxOut(
+				int64(coin.Value), addr.ScriptAddress()))
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	for _, kernel := range kernels {
+		rec.MsgTx.TxOut = append(rec.MsgTx.TxOut, kernel.Pegouts...)
+	}
+
+	// Add a sentinel kernel so that we don't process this tx again.
+	rec.MsgTx.Mweb.TxBody.Kernels = append(kernels, &wire.MwebKernel{
+		Features: wire.MwebKernelFeeFeatureBit, Fee: math.MaxUint64})
+
+	var buf bytes.Buffer
+	if err = rec.MsgTx.Serialize(&buf); err != nil {
+		return err
+	}
+	rec.SerializedTx = buf.Bytes()
+	rec.Hash = blake3.Sum256(rec.SerializedTx)
+
+	for outputId, index := range outpoints {
+		w.TxStore.AddMwebOutpoint(txmgrNs, outputId,
+			wire.NewOutPoint(&rec.Hash, index))
+	}
+
+	return nil
+}
+
+func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+
+	chainClient, err := w.requireChainClient()
+	if err != nil {
+		return err
+	}
+
+	err = w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
+		for _, utxo := range n.Utxos {
+			_, err := mweb.RewindOutput(utxo.Output, scanSecret)
+			if err != nil {
+				continue
 			}
 
-			return nil
-		})
+			blockHash, err := chainClient.GetBlockHash(int64(utxo.Height))
+			if err != nil {
+				return err
+			}
+			blockHeader, err := chainClient.GetBlockHeader(blockHash)
+			if err != nil {
+				return err
+			}
+			block := &wtxmgr.BlockMeta{
+				Block: wtxmgr.Block{Hash: *blockHash, Height: utxo.Height},
+				Time:  blockHeader.Timestamp,
+			}
+
+			tx, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
+			if err != nil {
+				return err
+			}
+			var txHash chainhash.Hash
+			if tx != nil {
+				txHash = tx.TxHash()
+			} else {
+				tx = &wire.MsgTx{Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
+					Outputs: []*wire.MwebOutput{utxo.Output}}}}
+			}
+			rec := &wtxmgr.TxRecord{
+				MsgTx:    *tx,
+				Hash:     txHash,
+				Received: blockHeader.Timestamp,
+			}
+
+			err = w.addRelevantTx(dbtx, rec, block)
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	return addrmgrNs.Put([]byte("mwebLeafset"), n.Leafset)
