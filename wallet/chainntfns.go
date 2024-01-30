@@ -570,21 +570,19 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 				Time:  blockHeader.Timestamp,
 			}
 
-			tx, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
+			rec, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
 			if err != nil {
 				return err
 			}
-			var txHash chainhash.Hash
-			if tx != nil {
-				txHash = tx.TxHash()
-			} else {
-				tx = &wire.MsgTx{Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
-					Outputs: []*wire.MwebOutput{utxo.Output}}}}
-			}
-			rec := &wtxmgr.TxRecord{
-				MsgTx:    *tx,
-				Hash:     txHash,
-				Received: blockHeader.Timestamp,
+			if rec == nil {
+				rec = &wtxmgr.TxRecord{
+					MsgTx: wire.MsgTx{
+						Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
+							Outputs: []*wire.MwebOutput{utxo.Output},
+						}},
+					},
+					Received: blockHeader.Timestamp,
+				}
 			}
 
 			err = w.addRelevantTx(dbtx, rec, block)
