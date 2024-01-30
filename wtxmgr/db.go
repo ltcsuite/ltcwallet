@@ -1042,14 +1042,19 @@ func deleteRawUnmined(ns walletdb.ReadWriteBucket, k []byte) error {
 	return nil
 }
 
-func forEachRawUnmined(ns walletdb.ReadBucket, f func(*wire.MsgTx)) error {
+func forEachUnmined(ns walletdb.ReadBucket, f func(*TxRecord)) error {
 	return ns.NestedReadBucket(bucketUnmined).ForEach(func(k, v []byte) error {
-		var tx wire.MsgTx
-		err := tx.Deserialize(bytes.NewBuffer(v))
+		var txHash chainhash.Hash
+		err := readRawUnminedHash(k, &txHash)
 		if err != nil {
 			return err
 		}
-		f(&tx)
+		var rec TxRecord
+		err = readRawTxRecord(&txHash, v, &rec)
+		if err != nil {
+			return err
+		}
+		f(&rec)
 		return nil
 	})
 }
