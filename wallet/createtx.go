@@ -457,7 +457,7 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 		scriptSize = txsizes.P2TRPkScriptSize
 	}
 
-	newChangeScript := func() ([]byte, error) {
+	newChangeScript := func(keyScope *waddrmgr.KeyScope) ([]byte, error) {
 		// Derive the change output script. As a hack to allow spending
 		// from the imported account, change addresses are created from
 		// account 0.
@@ -465,13 +465,16 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 			changeAddr ltcutil.Address
 			err        error
 		)
+		if keyScope == nil {
+			keyScope = changeKeyScope
+		}
 		if account == waddrmgr.ImportedAddrAccount {
 			changeAddr, err = w.newChangeAddress(
-				addrmgrNs, 0, *changeKeyScope,
+				addrmgrNs, 0, *keyScope,
 			)
 		} else {
 			changeAddr, err = w.newChangeAddress(
-				addrmgrNs, account, *changeKeyScope,
+				addrmgrNs, account, *keyScope,
 			)
 		}
 		if err != nil {
