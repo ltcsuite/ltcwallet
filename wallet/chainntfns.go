@@ -604,6 +604,10 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) 
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
+	if newLeafset == nil {
+		return nil
+	}
+
 	oldLeafset := addrmgrNs.Get([]byte("mwebLeafset"))
 	err := addrmgrNs.Put([]byte("mwebLeafset"), newLeafset)
 	if err != nil {
