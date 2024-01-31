@@ -3728,8 +3728,11 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
 			_, err = w.Manager.Address(addrmgrNs, addr)
 			if waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
-				txRec.MsgTx.AddTxOut(wire.NewTxOut(
-					int64(coin.Value), addr.ScriptAddress()))
+				txRec.MsgTx.AddTxOut(&wire.TxOut{
+					Value:        int64(coin.Value),
+					PkScript:     addr.ScriptAddress(),
+					MwebOutputId: coin.OutputId,
+				})
 			} else if err != nil {
 				return err
 			}

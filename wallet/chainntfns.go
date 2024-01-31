@@ -493,14 +493,13 @@ func (w *Wallet) extractCanonicalFromMweb(
 	}
 
 	for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
-		outpoint, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
+		outpoint, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
 		if err != nil {
 			continue
 		}
 		rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *outpoint})
 	}
 
-	outpoints := make(map[chainhash.Hash]uint32)
 	err := w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
 		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
 			coin, err := mweb.RewindOutput(output, scanSecret)
@@ -508,18 +507,16 @@ func (w *Wallet) extractCanonicalFromMweb(
 				continue
 			}
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			outpoints[*output.Hash()] = uint32(len(rec.MsgTx.TxOut))
-			rec.MsgTx.AddTxOut(wire.NewTxOut(
-				int64(coin.Value), addr.ScriptAddress()))
+			rec.MsgTx.AddTxOut(&wire.TxOut{
+				Value:        int64(coin.Value),
+				PkScript:     addr.ScriptAddress(),
+				MwebOutputId: coin.OutputId,
+			})
 		}
 		return nil
 	})
 	if err != nil {
 		return err
-	}
-
-	for _, kernel := range kernels {
-		rec.MsgTx.TxOut = append(rec.MsgTx.TxOut, kernel.Pegouts...)
 	}
 
 	// Add a sentinel kernel so that we don't process this tx again.
@@ -533,9 +530,11 @@ func (w *Wallet) extractCanonicalFromMweb(
 	rec.SerializedTx = buf.Bytes()
 	rec.Hash = blake3.Sum256(rec.SerializedTx)
 
-	for outputId, index := range outpoints {
-		w.TxStore.AddMwebOutpoint(txmgrNs, &outputId,
-			wire.NewOutPoint(&rec.Hash, index))
+	for index, txOut := range rec.MsgTx.TxOut {
+		if txOut.MwebOutputId != nil {
+			w.TxStore.AddMwebOutpoint(txmgrNs, txOut.MwebOutputId,
+				wire.NewOutPoint(&rec.Hash, uint32(index)))
+		}
 	}
 
 	return nil
@@ -572,7 +571,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 	var remainingUtxos []*wire.MwebNetUtxo
 
 	for _, utxo := range n.Utxos {
-		rec, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
+		_, rec, err := w.TxStore.GetMwebOutpoint(txmgrNs, utxo.Output.Hash())
 		if err != nil {
 			return err
 		}

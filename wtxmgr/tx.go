@@ -405,23 +405,6 @@ func (s *Store) RemoveUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	return s.removeConflict(ns, rec)
 }
 
-// GetTxForMwebOutput tries to find the transaction in the unmined bucket
-// that spends to the mweb output.
-func (s *Store) GetTxForMwebOutput(ns walletdb.ReadBucket,
-	output *wire.MwebOutput) (result *TxRecord, err error) {
-
-	err = forEachUnmined(ns, func(rec *TxRecord) {
-		if rec.MsgTx.Mweb != nil {
-			for _, out := range rec.MsgTx.Mweb.TxBody.Outputs {
-				if *out.Hash() == *output.Hash() {
-					result = rec
-				}
-			}
-		}
-	})
-	return
-}
-
 // Store a mapping from an mweb output to its synthetic outpoint.
 func (s *Store) AddMwebOutpoint(ns walletdb.ReadWriteBucket,
 	outputId *chainhash.Hash, outpoint *wire.OutPoint) error {
@@ -430,25 +413,22 @@ func (s *Store) AddMwebOutpoint(ns walletdb.ReadWriteBucket,
 }
 
 // Get the synthetic outpoint for an mweb output if it exists.
-func (s *Store) GetMwebOutpoint(ns walletdb.ReadBucket,
-	outputId *chainhash.Hash) (*wire.OutPoint, error) {
+func (s *Store) GetMwebOutpoint(
+	ns walletdb.ReadBucket, outputId *chainhash.Hash) (
+	op *wire.OutPoint, rec *TxRecord, err error) {
 
-	op, err := existsMwebOutpoint(ns, outputId)
-	if err != nil {
-		return nil, err
+	rec = &TxRecord{}
+	if op, err = existsMwebOutpoint(ns, outputId); err != nil {
+	} else if op == nil {
+		err = ErrUnknownOutput
+	} else if v := existsRawUnmined(ns, op.Hash[:]); v != nil {
+		err = readRawTxRecord(&op.Hash, v, rec)
+	} else if _, v := latestTxRecord(ns, &op.Hash); v != nil {
+		err = readRawTxRecord(&op.Hash, v, rec)
+	} else {
+		err = ErrUnknownOutput
 	}
-	if op == nil {
-		return nil, ErrUnknownOutput
-	}
-	var (
-		k  = canonicalOutPoint(&op.Hash, op.Index)
-		v1 = existsRawUnspent(ns, k)
-		v2 = existsRawUnminedCredit(ns, k)
-	)
-	if v1 == nil && v2 == nil {
-		return nil, ErrUnknownOutput
-	}
-	return op, nil
+	return
 }
 
 // insertMinedTx inserts a new transaction record for a mined transaction into
@@ -903,7 +883,7 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 		}
 		if rec.MsgTx.Mweb != nil {
 			for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
-				outpoint, err := s.GetMwebOutpoint(ns, output.Hash())
+				outpoint, _, err := s.GetMwebOutpoint(ns, output.Hash())
 				switch err {
 				case ErrUnknownOutput:
 				case nil:

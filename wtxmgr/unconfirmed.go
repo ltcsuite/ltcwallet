@@ -9,6 +9,7 @@ import (
 	"bytes"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
@@ -98,6 +99,25 @@ func (s *Store) removeDoubleSpends(ns walletdb.ReadWriteBucket, rec *TxRecord) e
 			)
 			if err != nil {
 				return err
+			}
+
+			// Don't remove pegin transactions.
+			if doubleSpend.MsgTx.Mweb != nil &&
+				len(doubleSpend.MsgTx.Mweb.TxBody.Kernels) > 0 &&
+				len(rec.MsgTx.TxOut) > 0 &&
+				len(doubleSpend.MsgTx.TxOut) > 0 {
+
+				kernel := doubleSpend.MsgTx.Mweb.TxBody.Kernels[0]
+				txOut1 := rec.MsgTx.TxOut[0]
+				txOut2 := doubleSpend.MsgTx.TxOut[0]
+
+				if kernel.Pegin > 0 &&
+					txOut1.Value == int64(kernel.Pegin) &&
+					txOut2.Value == int64(kernel.Pegin) &&
+					bytes.Equal(txOut1.PkScript, mweb.PeginScript(kernel)) &&
+					bytes.Equal(txOut2.PkScript, mweb.PeginScript(kernel)) {
+					continue
+				}
 			}
 
 			log.Debugf("Removing double spending transaction %v",
