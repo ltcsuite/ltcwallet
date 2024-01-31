@@ -541,56 +541,72 @@ func (w *Wallet) extractCanonicalFromMweb(
 	return nil
 }
 
+func (w *Wallet) getBlockMeta(height int32) (*wtxmgr.BlockMeta, error) {
+	chainClient, err := w.requireChainClient()
+	if err != nil {
+		return nil, err
+	}
+	blockHash, err := chainClient.GetBlockHash(int64(height))
+	if err != nil {
+		return nil, err
+	}
+	blockHeader, err := chainClient.GetBlockHeader(blockHash)
+	if err != nil {
+		return nil, err
+	}
+	return &wtxmgr.BlockMeta{
+		Block: wtxmgr.Block{Hash: *blockHash, Height: height},
+		Time:  blockHeader.Timestamp,
+	}, nil
+}
+
 func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
-	chainClient, err := w.requireChainClient()
-	if err != nil {
-		return err
+	var remainingUtxos []*wire.MwebNetUtxo
+	for _, utxo := range n.Utxos {
+		rec, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
+		if err != nil {
+			return err
+		}
+		if rec == nil {
+			remainingUtxos = append(remainingUtxos, utxo)
+			continue
+		}
+		block, err := w.getBlockMeta(utxo.Height)
+		if err != nil {
+			return err
+		}
+		err = w.addRelevantTx(dbtx, rec, block)
+		if err != nil {
+			return err
+		}
 	}
 
-	err = w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
-		for _, utxo := range n.Utxos {
+	err := w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
+		for _, utxo := range remainingUtxos {
 			_, err := mweb.RewindOutput(utxo.Output, scanSecret)
 			if err != nil {
 				continue
 			}
-
-			blockHash, err := chainClient.GetBlockHash(int64(utxo.Height))
+			block, err := w.getBlockMeta(utxo.Height)
 			if err != nil {
 				return err
 			}
-			blockHeader, err := chainClient.GetBlockHeader(blockHash)
-			if err != nil {
-				return err
+			rec := &wtxmgr.TxRecord{
+				MsgTx: wire.MsgTx{
+					Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
+						Outputs: []*wire.MwebOutput{utxo.Output},
+					}},
+				},
+				Received: block.Time,
 			}
-			block := &wtxmgr.BlockMeta{
-				Block: wtxmgr.Block{Hash: *blockHash, Height: utxo.Height},
-				Time:  blockHeader.Timestamp,
-			}
-
-			rec, err := w.TxStore.GetTxForMwebOutput(txmgrNs, utxo.Output)
-			if err != nil {
-				return err
-			}
-			if rec == nil {
-				rec = &wtxmgr.TxRecord{
-					MsgTx: wire.MsgTx{
-						Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
-							Outputs: []*wire.MwebOutput{utxo.Output},
-						}},
-					},
-					Received: blockHeader.Timestamp,
-				}
-			}
-
 			err = w.addRelevantTx(dbtx, rec, block)
 			if err != nil {
 				return err
 			}
 		}
-
 		return nil
 	})
 	if err != nil {
