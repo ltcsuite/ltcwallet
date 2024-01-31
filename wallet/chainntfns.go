@@ -572,13 +572,13 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 
 	for _, utxo := range n.Utxos {
 		_, rec, err := w.TxStore.GetMwebOutpoint(txmgrNs, utxo.Output.Hash())
-		if err != nil {
-			return err
-		}
-		if rec != nil {
+		switch err {
+		case nil:
 			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
-		} else {
+		case wtxmgr.ErrUnknownOutput:
 			remainingUtxos = append(remainingUtxos, utxo)
+		default:
+			return err
 		}
 	}
 
