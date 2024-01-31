@@ -582,6 +582,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 		if err != nil {
 			return err
 		}
+		w.NtfnServer.notifyAttachedBlock(dbtx, block)
 	}
 
 	err := w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
@@ -606,6 +607,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 			if err != nil {
 				return err
 			}
+			w.NtfnServer.notifyAttachedBlock(dbtx, block)
 		}
 		return nil
 	})
@@ -688,7 +690,12 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) 
 	rec.Hash = rec.MsgTx.TxHash()
 	rec.Received = block.Time
 
-	return w.addRelevantTx(dbtx, &rec, block)
+	err = w.addRelevantTx(dbtx, &rec, block)
+	if err != nil {
+		return err
+	}
+	w.NtfnServer.notifyAttachedBlock(dbtx, block)
+	return nil
 }
 
 // chainConn is an interface that abstracts the chain connection logic required
