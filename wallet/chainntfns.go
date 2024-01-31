@@ -561,7 +561,7 @@ func (w *Wallet) getBlockMeta(height int32) (*wtxmgr.BlockMeta, error) {
 }
 
 func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
-	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
 	var remainingUtxos []*wire.MwebNetUtxo
@@ -673,6 +673,10 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) 
 		default:
 			return err
 		}
+	}
+
+	if len(rec.MsgTx.TxIn) == 0 {
+		return nil
 	}
 
 	syncBlock := w.Manager.SyncedTo()
