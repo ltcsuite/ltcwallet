@@ -564,7 +564,11 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
-	unminedTxns := make(map[*wtxmgr.TxRecord]int32)
+	type minedTx struct {
+		rec    *wtxmgr.TxRecord
+		height int32
+	}
+	minedTxns := make(map[chainhash.Hash]minedTx)
 	var remainingUtxos []*wire.MwebNetUtxo
 
 	for _, utxo := range n.Utxos {
@@ -573,18 +577,18 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 			return err
 		}
 		if rec != nil {
-			unminedTxns[rec] = utxo.Height
+			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
 		} else {
 			remainingUtxos = append(remainingUtxos, utxo)
 		}
 	}
 
-	for rec, height := range unminedTxns {
-		block, err := w.getBlockMeta(height)
+	for _, tx := range minedTxns {
+		block, err := w.getBlockMeta(tx.height)
 		if err != nil {
 			return err
 		}
-		err = w.addRelevantTx(dbtx, rec, block)
+		err = w.addRelevantTx(dbtx, tx.rec, block)
 		if err != nil {
 			return err
 		}
