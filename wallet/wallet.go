@@ -24,6 +24,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/chain"
@@ -3412,7 +3413,8 @@ func (w *Wallet) SendOutputs(outputs []*wire.TxOut, keyScope *waddrmgr.KeyScope,
 		return createdTx.Tx, ErrTxUnsigned
 	}
 
-	txHash, err := w.reliablyPublishTransaction(createdTx.Tx, label)
+	txHash, err := w.reliablyPublishTransaction(
+		createdTx.Tx, createdTx.NewMwebCoins, label)
 	if err != nil {
 		return nil, err
 	}
@@ -3668,7 +3670,7 @@ func (e *ErrInMempool) Unwrap() error {
 // This function is unstable and will be removed once syncing code is moved out
 // of the wallet.
 func (w *Wallet) PublishTransaction(tx *wire.MsgTx, label string) error {
-	_, err := w.reliablyPublishTransaction(tx, label)
+	_, err := w.reliablyPublishTransaction(tx, nil, label)
 	return err
 }
 
@@ -3678,7 +3680,7 @@ func (w *Wallet) PublishTransaction(tx *wire.MsgTx, label string) error {
 // the database (along with cleaning up all inputs used, and outputs created) if
 // the transaction is rejected by the backend.
 func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
-	label string) (*chainhash.Hash, error) {
+	newMwebCoins []*mweb.Coin, label string) (*chainhash.Hash, error) {
 
 	chainClient, err := w.requireChainClient()
 	if err != nil {
@@ -3719,6 +3721,17 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 					return err
 				}
 				ourAddrs = append(ourAddrs, addr)
+			}
+		}
+
+		for _, coin := range newMwebCoins {
+			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+			_, err = w.Manager.Address(addrmgrNs, addr)
+			if waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
+				txRec.MsgTx.AddTxOut(wire.NewTxOut(
+					int64(coin.Value), addr.ScriptAddress()))
+			} else if err != nil {
+				return err
 			}
 		}
 

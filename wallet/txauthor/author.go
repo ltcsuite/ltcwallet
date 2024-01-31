@@ -65,6 +65,7 @@ type AuthoredTx struct {
 	PrevMwebOutputs []*wire.MwebOutput
 	TotalInput      ltcutil.Amount
 	ChangeIndex     int // negative if no change
+	NewMwebCoins    []*mweb.Coin
 }
 
 // ChangeSource provides change output scripts for transaction creation.
@@ -567,7 +568,8 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 		fee = sumCoins - sumOutputs
 	}
 
-	tx.Tx.Mweb, err = mweb.NewTransaction(coins, recipients, fee, pegin, pegouts)
+	tx.Tx.Mweb, tx.NewMwebCoins, err =
+		mweb.NewTransaction(coins, recipients, fee, pegin, pegouts)
 	if err != nil {
 		return err
 	}
