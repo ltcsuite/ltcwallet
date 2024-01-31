@@ -7,6 +7,7 @@ package wallet
 import (
 	"bytes"
 	"math"
+	"math/big"
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -20,6 +21,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
+	"github.com/ltcsuite/neutrino/mwebdb"
 	"lukechampine.com/blake3"
 )
 
@@ -197,11 +199,9 @@ func (w *Wallet) handleChainNotifications() {
 				}
 				notificationName = "filtered block connected"
 			case chain.MwebUtxos:
-				if len(n.Utxos) > 0 {
-					err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
-						return w.checkMwebUtxos(tx, &n)
-					})
-				}
+				err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+					return w.checkMwebUtxos(tx, &n)
+				})
 				notificationName = "mweb utxos"
 
 			// The following require some database maintenance, but also
@@ -597,7 +597,74 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 		return err
 	}
 
-	return addrmgrNs.Put([]byte("mwebLeafset"), n.Leafset)
+	return w.checkMwebLeafset(dbtx, n.Leafset)
+}
+
+func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) error {
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+
+	oldLeafset := addrmgrNs.Get([]byte("mwebLeafset"))
+	err := addrmgrNs.Put([]byte("mwebLeafset"), newLeafset)
+	if err != nil {
+		return err
+	}
+
+	if len(oldLeafset) < len(newLeafset) {
+		newLeafset = newLeafset[:len(oldLeafset)]
+	} else {
+		oldLeafset = oldLeafset[:len(newLeafset)]
+	}
+
+	old := new(big.Int).SetBytes(oldLeafset)
+	new := new(big.Int).SetBytes(newLeafset)
+
+	if new.And(old, new).Cmp(old) == 0 {
+		return nil
+	}
+
+	// Leaves in the old leafset were spent, check if they were ours.
+	chainClient, err := w.requireChainClient()
+	if err != nil {
+		return err
+	}
+
+	nc, ok := chainClient.(*chain.NeutrinoClient)
+	if !ok {
+		return nil
+	}
+
+	outputs, err := w.TxStore.UnspentOutputs(txmgrNs)
+	if err != nil {
+		return err
+	}
+
+	var rec wtxmgr.TxRecord
+	for _, output := range outputs {
+		if output.MwebOutput == nil {
+			continue
+		}
+		_, err = nc.CS.MwebCoinDB.FetchCoin(output.MwebOutput.Hash())
+
+		switch err {
+		case mwebdb.ErrCoinNotFound:
+			rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: output.OutPoint})
+		case nil:
+		default:
+			return err
+		}
+	}
+
+	syncBlock := w.Manager.SyncedTo()
+	block := &wtxmgr.BlockMeta{
+		Block: wtxmgr.Block{Hash: syncBlock.Hash, Height: syncBlock.Height},
+		Time:  syncBlock.Timestamp,
+	}
+
+	rec.Hash = rec.MsgTx.TxHash()
+	rec.Received = block.Time
+
+	return w.addRelevantTx(dbtx, &rec, block)
 }
 
 // chainConn is an interface that abstracts the chain connection logic required
