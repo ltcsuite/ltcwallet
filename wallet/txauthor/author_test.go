@@ -9,6 +9,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
 	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
 )
@@ -27,7 +28,8 @@ func makeInputSource(unspents []*wire.TxOut) InputSource {
 	currentTotal := ltcutil.Amount(0)
 	currentInputs := make([]*wire.TxIn, 0, len(unspents))
 	currentInputValues := make([]ltcutil.Amount, 0, len(unspents))
-	f := func(target ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn, []ltcutil.Amount, [][]byte, error) {
+	f := func(target ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn,
+		[]ltcutil.Amount, [][]byte, []*wire.MwebOutput, error) {
 		for currentTotal < target && len(unspents) != 0 {
 			u := unspents[0]
 			unspents = unspents[1:]
@@ -36,7 +38,8 @@ func makeInputSource(unspents []*wire.TxOut) InputSource {
 			currentInputs = append(currentInputs, nextInput)
 			currentInputValues = append(currentInputValues, ltcutil.Amount(u.Value))
 		}
-		return currentTotal, currentInputs, currentInputValues, make([][]byte, len(currentInputs)), nil
+		return currentTotal, currentInputs, currentInputValues,
+			make([][]byte, len(currentInputs)), nil, nil
 	}
 	return InputSource(f)
 }
@@ -175,7 +178,7 @@ func TestNewUnsignedTransaction(t *testing.T) {
 	}
 
 	changeSource := &ChangeSource{
-		NewScript: func() ([]byte, error) {
+		NewScript: func(*waddrmgr.KeyScope) ([]byte, error) {
 			// Only length matters for these tests.
 			return make([]byte, txsizes.P2WPKHPkScriptSize), nil
 		},

@@ -41,6 +41,7 @@ type OutputKind byte
 const (
 	OutputKindNormal OutputKind = iota
 	OutputKindCoinbase
+	OutputKindMwebPegout
 )
 
 // TransactionOutput describes an output that was or is at least partially

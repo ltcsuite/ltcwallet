@@ -82,6 +82,8 @@ func (w *Wallet) UnspentOutputs(policy OutputSelectionPolicy) ([]*TransactionOut
 			outputSource := OutputKindNormal
 			if output.FromCoinBase {
 				outputSource = OutputKindCoinbase
+			} else if output.IsMwebPegout {
+				outputSource = OutputKindMwebPegout
 			}
 
 			result := &TransactionOutput{

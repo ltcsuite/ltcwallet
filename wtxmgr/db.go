@@ -1460,17 +1460,6 @@ func existsMwebOutpoint(ns walletdb.ReadBucket,
 	return &op, nil
 }
 
-func deleteMwebOutpoint(ns walletdb.ReadWriteBucket,
-	outputId *chainhash.Hash) error {
-
-	err := ns.NestedReadWriteBucket(bucketMwebOutpoints).Delete(outputId[:])
-	if err != nil {
-		str := "failed to delete mweb outpoint"
-		return storeError(ErrDatabase, str, err)
-	}
-	return nil
-}
-
 // openStore opens an existing transaction store from the passed namespace.
 func openStore(ns walletdb.ReadBucket) error {
 	version, err := fetchVersion(ns)
