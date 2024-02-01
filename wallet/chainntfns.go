@@ -6,6 +6,8 @@ package wallet
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"math"
 	"math/big"
 	"time"
@@ -354,6 +356,26 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 		return nil
 	}
 
+	isMwebPegout := make(map[uint32]bool)
+	if rec.MsgTx.Mweb != nil {
+		for _, kernel := range rec.MsgTx.Mweb.TxBody.Kernels {
+			for i := range kernel.Pegouts {
+				h := blake3.New(32, nil)
+				h.Write(kernel.Hash()[:])
+				binary.Write(h, binary.LittleEndian, uint32(i))
+				op, _, err := w.TxStore.GetMwebOutpoint(
+					txmgrNs, (*chainhash.Hash)(h.Sum(nil)))
+				if err != nil {
+					return err
+				}
+				if op.Hash != rec.Hash {
+					return errors.New("unexpected outpoint for pegout")
+				}
+				isMwebPegout[op.Index] = true
+			}
+		}
+	}
+
 	// Check every output to determine whether it is controlled by a wallet
 	// key.  If so, mark the output as a credit.
 	for i, output := range rec.MsgTx.TxOut {
@@ -394,11 +416,13 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 			// TODO: Credits should be added with the
 			// account they belong to, so wtxmgr is able to
 			// track per-account balances.
-			err = w.TxStore.AddCredit(
-				txmgrNs, rec, block, uint32(i), ma.Internal(),
-			)
-			if err != nil {
-				return err
+			if !isMwebPegout[uint32(i)] {
+				err = w.TxStore.AddCredit(
+					txmgrNs, rec, block, uint32(i), ma.Internal(),
+				)
+				if err != nil {
+					return err
+				}
 			}
 			err = w.Manager.MarkUsed(addrmgrNs, addr)
 			if err != nil {
@@ -519,6 +543,19 @@ func (w *Wallet) extractCanonicalFromMweb(
 		return err
 	}
 
+	for _, kernel := range kernels {
+		for i, pegout := range kernel.Pegouts {
+			h := blake3.New(32, nil)
+			h.Write(kernel.Hash()[:])
+			binary.Write(h, binary.LittleEndian, uint32(i))
+			rec.MsgTx.AddTxOut(&wire.TxOut{
+				Value:        pegout.Value,
+				PkScript:     pegout.PkScript,
+				MwebOutputId: (*chainhash.Hash)(h.Sum(nil)),
+			})
+		}
+	}
+
 	// Add a sentinel kernel so that we don't process this tx again.
 	rec.MsgTx.Mweb.TxBody.Kernels = append(kernels, &wire.MwebKernel{
 		Features: wire.MwebKernelFeeFeatureBit, Fee: math.MaxUint64})
@@ -530,10 +567,10 @@ func (w *Wallet) extractCanonicalFromMweb(
 	rec.SerializedTx = buf.Bytes()
 	rec.Hash = blake3.Sum256(rec.SerializedTx)
 
-	for index, txOut := range rec.MsgTx.TxOut {
+	for i, txOut := range rec.MsgTx.TxOut {
 		if txOut.MwebOutputId != nil {
 			w.TxStore.AddMwebOutpoint(txmgrNs, txOut.MwebOutputId,
-				wire.NewOutPoint(&rec.Hash, uint32(index)))
+				wire.NewOutPoint(&rec.Hash, uint32(i)))
 		}
 	}
 
