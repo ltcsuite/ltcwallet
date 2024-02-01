@@ -2038,7 +2038,7 @@ func RecvCategory(details *wtxmgr.TxDetails, syncHeight int32, net *chaincfg.Par
 		}
 		return CreditImmature
 	}
-	if details.MsgTx.IsHogEx {
+	if details.MsgTx.HogEx() {
 		if confirmed(int32(net.MwebPegoutMaturity), details.Block.Height, syncHeight) {
 			return CreditReceive
 		}
