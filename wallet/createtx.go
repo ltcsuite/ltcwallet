@@ -364,11 +364,8 @@ func (w *Wallet) findEligibleOutputs(dbtx walletdb.ReadTx,
 		if !confirmed(minconf, output.Height, bs.Height) {
 			continue
 		}
-		if output.FromCoinBase {
-			target := int32(w.chainParams.CoinbaseMaturity)
-			if !confirmed(target, output.Height, bs.Height) {
-				continue
-			}
+		if !output.IsMature(bs.Height, w.chainParams) {
+			continue
 		}
 
 		// Locked unspent outputs are skipped.

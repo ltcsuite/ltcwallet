@@ -187,6 +187,21 @@ type Credit struct {
 	MwebOutput   *wire.MwebOutput
 	Received     time.Time
 	FromCoinBase bool
+	IsMwebPegout bool
+}
+
+func (cred *Credit) IsMature(height int32, chainParams *chaincfg.Params) bool {
+	confirms := height - cred.Height + 1
+	if cred.Height < 0 {
+		confirms = 0
+	}
+	if cred.FromCoinBase && confirms < int32(chainParams.CoinbaseMaturity) {
+		return false
+	}
+	if cred.IsMwebPegout && confirms < int32(chainParams.MwebPegoutMaturity) {
+		return false
+	}
+	return true
 }
 
 // LockID represents a unique context-specific ID assigned to an output lock.
@@ -429,6 +444,25 @@ func (s *Store) GetMwebOutpoint(
 		err = ErrUnknownOutput
 	}
 	return
+}
+
+// Find the mweb output within the transaction that corresponds
+// to the synthetic outpoint.
+func (s *Store) GetMwebOutput(ns walletdb.ReadBucket,
+	op *wire.OutPoint, rec *TxRecord) (*wire.MwebOutput, error) {
+
+	if rec.MsgTx.Mweb != nil {
+		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+			outpoint, err := existsMwebOutpoint(ns, output.Hash())
+			if err != nil {
+				return nil, err
+			}
+			if outpoint != nil && *outpoint == *op {
+				return output, nil
+			}
+		}
+	}
+	return nil, nil
 }
 
 // insertMinedTx inserts a new transaction record for a mined transaction into
@@ -880,20 +914,11 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			PkScript:     txOut.PkScript,
 			Received:     rec.Received,
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
+			IsMwebPegout: rec.MsgTx.IsHogEx,
 		}
-		if rec.MsgTx.Mweb != nil {
-			for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
-				outpoint, _, err := s.GetMwebOutpoint(ns, output.Hash())
-				switch err {
-				case ErrUnknownOutput:
-				case nil:
-					if *outpoint == op {
-						cred.MwebOutput = output
-					}
-				default:
-					return err
-				}
-			}
+		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, rec)
+		if err != nil {
+			return err
 		}
 		unspent = append(unspent, cred)
 		return nil
@@ -943,6 +968,11 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			PkScript:     txOut.PkScript,
 			Received:     rec.Received,
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
+			IsMwebPegout: rec.MsgTx.IsHogEx,
+		}
+		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, &rec)
+		if err != nil {
+			return err
 		}
 		unspent = append(unspent, cred)
 		return nil
@@ -1070,8 +1100,9 @@ func (s *Store) Balance(ns walletdb.ReadBucket, minConf int32, syncHeight int32)
 					continue
 				}
 				confs := syncHeight - block.Height + 1
-				if confs < minConf || (blockchain.IsCoinBaseTx(&rec.MsgTx) &&
-					confs < coinbaseMaturity) {
+				if confs < minConf ||
+					blockchain.IsCoinBaseTx(&rec.MsgTx) && confs < coinbaseMaturity ||
+					rec.MsgTx.IsHogEx && confs < int32(s.chainParams.MwebPegoutMaturity) {
 					bal -= amt
 				}
 			}
