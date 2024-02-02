@@ -334,29 +334,18 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
-	if rec.MsgTx.IsPegIn() && rec.MsgTx.Mweb == nil {
+	pegins := mweb.Pegins(&rec.MsgTx)
+	if len(pegins) > 0 && rec.MsgTx.Mweb == nil {
 		doubleSpends, err := w.TxStore.RemoveDoubleSpends(txmgrNs, rec, true)
 		if err != nil {
 			return err
 		}
 
 		for _, doubleSpend := range doubleSpends {
-			if doubleSpend.MsgTx.Mweb != nil &&
-				len(doubleSpend.MsgTx.Mweb.TxBody.Kernels) > 0 &&
-				len(doubleSpend.MsgTx.TxOut) > 0 {
-
-				kernel := doubleSpend.MsgTx.Mweb.TxBody.Kernels[0]
-				txOut1 := rec.MsgTx.TxOut[0]
-				txOut2 := doubleSpend.MsgTx.TxOut[0]
-
-				if kernel.Pegin > 0 &&
-					txOut1.Value == int64(kernel.Pegin) &&
-					txOut2.Value == int64(kernel.Pegin) &&
-					bytes.Equal(txOut1.PkScript, mweb.PeginScript(kernel)) &&
-					bytes.Equal(txOut2.PkScript, mweb.PeginScript(kernel)) {
-
+			if doubleSpend.MsgTx.Mweb != nil {
+				kernels := doubleSpend.MsgTx.Mweb.TxBody.Kernels
+				if mweb.PeginsMatch(pegins, kernels) {
 					rec = doubleSpend
-					break
 				}
 			}
 		}

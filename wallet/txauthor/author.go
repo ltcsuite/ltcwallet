@@ -581,10 +581,7 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 	tx.ChangeIndex = -1
 
 	if pegin > 0 {
-		tx.Tx.TxOut = []*wire.TxOut{{
-			Value:    int64(pegin),
-			PkScript: mweb.PeginScript(tx.Tx.Mweb.TxBody.Kernels[0]),
-		}}
+		tx.Tx.AddTxOut(mweb.NewPegin(pegin, tx.Tx.Mweb.TxBody.Kernels[0]))
 	}
 
 	return
