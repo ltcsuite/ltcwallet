@@ -522,7 +522,7 @@ func (s *Store) insertMinedTx(ns walletdb.ReadWriteBucket, rec *TxRecord,
 	// from the unconfirmed set.  This also handles removing unconfirmed
 	// transaction spend chains if any other unconfirmed transactions spend
 	// outputs of the removed double spend.
-	if err := s.removeDoubleSpends(ns, rec); err != nil {
+	if _, err := s.RemoveDoubleSpends(ns, rec, false); err != nil {
 		return err
 	}
 
