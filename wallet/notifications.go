@@ -149,6 +149,7 @@ func makeTxSummary(dbtx walletdb.ReadTx, w *Wallet, details *wtxmgr.TxDetails) T
 	return TransactionSummary{
 		Hash:        &details.Hash,
 		Transaction: serializedTx,
+		Broadcast:   details.BroadcastTx,
 		MyInputs:    inputs,
 		MyOutputs:   outputs,
 		Fee:         fee,
@@ -367,6 +368,7 @@ type Block struct {
 type TransactionSummary struct {
 	Hash        *chainhash.Hash
 	Transaction []byte
+	Broadcast   []byte
 	MyInputs    []TransactionSummaryInput
 	MyOutputs   []TransactionSummaryOutput
 	Fee         ltcutil.Amount

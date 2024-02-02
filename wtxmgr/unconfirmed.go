@@ -63,15 +63,11 @@ func (s *Store) insertMemPoolTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	return nil
 }
 
-// RemoveDoubleSpends checks for any unmined transactions which would introduce
+// removeDoubleSpends checks for any unmined transactions which would introduce
 // a double spend if tx was added to the store (either as a confirmed or unmined
 // transaction).  Each conflicting transaction and all transactions which spend
 // it are recursively removed.
-func (s *Store) RemoveDoubleSpends(ns walletdb.ReadWriteBucket,
-	rec *TxRecord, dryRun bool) (map[chainhash.Hash]*TxRecord, error) {
-
-	doubleSpends := make(map[chainhash.Hash]*TxRecord)
-
+func (s *Store) removeDoubleSpends(ns walletdb.ReadWriteBucket, rec *TxRecord) error {
 	for _, input := range rec.MsgTx.TxIn {
 		prevOut := &input.PreviousOutPoint
 		prevOutKey := canonicalOutPoint(&prevOut.Hash, prevOut.Index)
@@ -101,24 +97,19 @@ func (s *Store) RemoveDoubleSpends(ns walletdb.ReadWriteBucket,
 				&doubleSpend.Hash, doubleSpendVal, &doubleSpend,
 			)
 			if err != nil {
-				return nil, err
-			}
-
-			doubleSpends[doubleSpend.Hash] = &doubleSpend
-			if dryRun {
-				continue
+				return err
 			}
 
 			log.Debugf("Removing double spending transaction %v",
 				doubleSpend.Hash)
 
 			if err := s.removeConflict(ns, &doubleSpend); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
 
-	return doubleSpends, nil
+	return nil
 }
 
 // removeConflict removes an unmined transaction record and all spend chains
