@@ -334,21 +334,9 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
-	pegins := mweb.Pegins(&rec.MsgTx)
-	if len(pegins) > 0 && rec.MsgTx.Mweb == nil {
-		doubleSpends, err := w.TxStore.RemoveDoubleSpends(txmgrNs, rec, true)
-		if err != nil {
-			return err
-		}
-
-		for _, doubleSpend := range doubleSpends {
-			if doubleSpend.MsgTx.Mweb != nil {
-				kernels := doubleSpend.MsgTx.Mweb.TxBody.Kernels
-				if mweb.PeginsMatch(pegins, kernels) {
-					rec = doubleSpend
-				}
-			}
-		}
+	txDetails, _ := w.TxStore.TxDetails(txmgrNs, &rec.Hash)
+	if txDetails != nil {
+		rec = &txDetails.TxRecord
 	}
 
 	err := w.extractCanonicalFromMweb(dbtx, rec)
@@ -577,12 +565,7 @@ func (w *Wallet) extractCanonicalFromMweb(
 	rec.MsgTx.Mweb.TxBody.Kernels = append(kernels, &wire.MwebKernel{
 		Features: wire.MwebKernelFeeFeatureBit, Fee: math.MaxUint64})
 
-	var buf bytes.Buffer
-	if err = rec.MsgTx.Serialize(&buf); err != nil {
-		return err
-	}
-	rec.SerializedTx = buf.Bytes()
-	rec.Hash = blake3.Sum256(rec.SerializedTx)
+	rec.SerializedTx = nil
 
 	for i, txOut := range rec.MsgTx.TxOut {
 		if txOut.MwebOutputId != nil {
@@ -664,6 +647,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 						Outputs: []*wire.MwebOutput{utxo.Output},
 					}},
 				},
+				Hash:     *utxo.OutputId,
 				Received: block.Time,
 			}
 			err = w.addRelevantTx(dbtx, rec, block)
