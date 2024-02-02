@@ -3701,6 +3701,8 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 	var ourAddrs []ltcutil.Address
 	err = walletdb.Update(w.db, func(dbTx walletdb.ReadWriteTx) error {
 		addrmgrNs := dbTx.ReadWriteBucket(waddrmgrNamespaceKey)
+		txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
+
 		for _, txOut := range tx.TxOut {
 			_, addrs, _, err := txscript.ExtractPkScriptAddrs(
 				txOut.PkScript, w.chainParams,
@@ -3728,11 +3730,11 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
 			_, err = w.Manager.Address(addrmgrNs, addr)
 			if waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
-				txRec.MsgTx.AddTxOut(&wire.TxOut{
-					Value:        int64(coin.Value),
-					PkScript:     addr.ScriptAddress(),
-					MwebOutputId: coin.OutputId,
-				})
+				txRec.MsgTx.AddTxOut(wire.NewTxOut(
+					int64(coin.Value), addr.ScriptAddress()))
+				w.TxStore.AddMwebOutpoint(txmgrNs, coin.OutputId,
+					wire.NewOutPoint(&txRec.Hash,
+						uint32(len(txRec.MsgTx.TxOut)-1)))
 			} else if err != nil {
 				return err
 			}

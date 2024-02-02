@@ -536,11 +536,10 @@ func (w *Wallet) extractCanonicalFromMweb(
 				continue
 			}
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			rec.MsgTx.AddTxOut(&wire.TxOut{
-				Value:        int64(coin.Value),
-				PkScript:     addr.ScriptAddress(),
-				MwebOutputId: coin.OutputId,
-			})
+			rec.MsgTx.AddTxOut(wire.NewTxOut(
+				int64(coin.Value), addr.ScriptAddress()))
+			w.TxStore.AddMwebOutpoint(txmgrNs, coin.OutputId,
+				wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
 		}
 		return nil
 	})
@@ -553,11 +552,9 @@ func (w *Wallet) extractCanonicalFromMweb(
 			h := blake3.New(32, nil)
 			h.Write(kernel.Hash()[:])
 			binary.Write(h, binary.LittleEndian, uint32(i))
-			rec.MsgTx.AddTxOut(&wire.TxOut{
-				Value:        pegout.Value,
-				PkScript:     pegout.PkScript,
-				MwebOutputId: (*chainhash.Hash)(h.Sum(nil)),
-			})
+			rec.MsgTx.AddTxOut(wire.NewTxOut(pegout.Value, pegout.PkScript))
+			w.TxStore.AddMwebOutpoint(txmgrNs, (*chainhash.Hash)(h.Sum(nil)),
+				wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
 		}
 	}
 
@@ -566,13 +563,6 @@ func (w *Wallet) extractCanonicalFromMweb(
 		Features: wire.MwebKernelFeeFeatureBit, Fee: math.MaxUint64})
 
 	rec.SerializedTx = nil
-
-	for i, txOut := range rec.MsgTx.TxOut {
-		if txOut.MwebOutputId != nil {
-			w.TxStore.AddMwebOutpoint(txmgrNs, txOut.MwebOutputId,
-				wire.NewOutPoint(&rec.Hash, uint32(i)))
-		}
-	}
 
 	return nil
 }
@@ -608,7 +598,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 	var remainingUtxos []*wire.MwebNetUtxo
 
 	for _, utxo := range n.Utxos {
-		_, rec, err := w.TxStore.GetMwebOutpoint(txmgrNs, utxo.Output.Hash())
+		_, rec, err := w.TxStore.GetMwebOutpoint(txmgrNs, utxo.OutputId)
 		switch err {
 		case nil:
 			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
