@@ -9,7 +9,6 @@ import (
 	"bytes"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
@@ -64,11 +63,15 @@ func (s *Store) insertMemPoolTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	return nil
 }
 
-// removeDoubleSpends checks for any unmined transactions which would introduce
+// RemoveDoubleSpends checks for any unmined transactions which would introduce
 // a double spend if tx was added to the store (either as a confirmed or unmined
 // transaction).  Each conflicting transaction and all transactions which spend
 // it are recursively removed.
-func (s *Store) removeDoubleSpends(ns walletdb.ReadWriteBucket, rec *TxRecord) error {
+func (s *Store) RemoveDoubleSpends(ns walletdb.ReadWriteBucket,
+	rec *TxRecord, dryRun bool) (map[chainhash.Hash]*TxRecord, error) {
+
+	doubleSpends := make(map[chainhash.Hash]*TxRecord)
+
 	for _, input := range rec.MsgTx.TxIn {
 		prevOut := &input.PreviousOutPoint
 		prevOutKey := canonicalOutPoint(&prevOut.Hash, prevOut.Index)
@@ -98,38 +101,24 @@ func (s *Store) removeDoubleSpends(ns walletdb.ReadWriteBucket, rec *TxRecord) e
 				&doubleSpend.Hash, doubleSpendVal, &doubleSpend,
 			)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
-			// Don't remove pegin transactions.
-			if doubleSpend.MsgTx.Mweb != nil &&
-				len(doubleSpend.MsgTx.Mweb.TxBody.Kernels) > 0 &&
-				len(rec.MsgTx.TxOut) > 0 &&
-				len(doubleSpend.MsgTx.TxOut) > 0 {
-
-				kernel := doubleSpend.MsgTx.Mweb.TxBody.Kernels[0]
-				txOut1 := rec.MsgTx.TxOut[0]
-				txOut2 := doubleSpend.MsgTx.TxOut[0]
-
-				if kernel.Pegin > 0 &&
-					txOut1.Value == int64(kernel.Pegin) &&
-					txOut2.Value == int64(kernel.Pegin) &&
-					bytes.Equal(txOut1.PkScript, mweb.PeginScript(kernel)) &&
-					bytes.Equal(txOut2.PkScript, mweb.PeginScript(kernel)) {
-					continue
-				}
+			doubleSpends[doubleSpend.Hash] = &doubleSpend
+			if dryRun {
+				continue
 			}
 
 			log.Debugf("Removing double spending transaction %v",
 				doubleSpend.Hash)
 
 			if err := s.removeConflict(ns, &doubleSpend); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
 
-	return nil
+	return doubleSpends, nil
 }
 
 // removeConflict removes an unmined transaction record and all spend chains
