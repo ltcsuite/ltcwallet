@@ -332,7 +332,7 @@ func (a *managedAddress) Compressed() bool {
 //
 // This is part of the ManagedAddress interface implementation.
 func (a *managedAddress) Used(ns walletdb.ReadBucket) bool {
-	return a.manager.fetchUsed(ns, a.AddrHash())
+	return a.manager.fetchUsed(ns, a.address.ScriptAddress())
 }
 
 // PubKey returns the public key associated with the address.
