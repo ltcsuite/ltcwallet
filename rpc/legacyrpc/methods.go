@@ -1393,7 +1393,7 @@ func sendPairs(w *wallet.Wallet, amounts map[string]ltcutil.Amount,
 		return "", err
 	}
 	tx, err := w.SendOutputs(
-		outputs, &keyScope, account, minconf, feeSatPerKb,
+		outputs, nil, account, minconf, feeSatPerKb,
 		wallet.CoinSelectionLargest, "",
 	)
 	if err != nil {
