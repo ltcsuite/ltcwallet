@@ -468,6 +468,10 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 		if details != nil {
 			w.NtfnServer.notifyMinedTransaction(dbtx, details, block)
 		}
+
+		if nc, ok := w.ChainClient().(*chain.NeutrinoClient); ok {
+			nc.CS.MarkAsConfirmed(rec.Hash)
+		}
 	}
 
 	return nil
