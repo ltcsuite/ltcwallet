@@ -92,8 +92,8 @@ var (
 		accountIndex:       777,
 		addrType:           waddrmgr.WitnessPubKey,
 		expectedScope:      waddrmgr.KeyScopeBIP0084,
-		expectedAddr:       "tltc1qllxcutkzsukf8u8c8stkp464j0esu9xq8gszh0",
-		expectedChangeAddr: "tltc1qu6jmqglrthscptjqj3egx54wy8xqvzn5wcak7h",
+		expectedAddr:       "tltc1qnhgyn2z67ye50ns4huxuvfhghmktzgr20a562q",
+		expectedChangeAddr: "tltc1qxyqd8jvr2g6vy8qmj08m6mmr6vm688lz5kvm8p",
 	}, {
 		name: "traditional bip49",
 		masterPriv: "uprv8tXDerPXZ1QsVp8y6GAMSMYxPQgWi3LSY8qS5ZH9x1YRu" +
@@ -112,8 +112,8 @@ var (
 		accountIndex:       9,
 		addrType:           waddrmgr.WitnessPubKey,
 		expectedScope:      waddrmgr.KeyScopeBIP0049Plus,
-		expectedAddr:       "QeZ4GXrWYftuV1HKT9Kbhg3ABzWUB842Sr",
-		expectedChangeAddr: "tltc1qeqn05w2hfq6axpdprhs4y7x65gxkkvfvawzg94",
+		expectedAddr:       "QhacLWS8hgsD493ZUKuDzyJGC7idz8yZTr",
+		expectedChangeAddr: "tltc1qpys8g8l7duwjvlmzkeyfpcyqxfzsv95fc7zz75",
 	}, {
 		name: "bip84",
 		masterPriv: "vprv9DMUxX4ShgxMM7L5vcwyeSeTZNpxefKwTFMerxB3L1vJ" +
@@ -122,8 +122,8 @@ var (
 		accountIndex:       1,
 		addrType:           waddrmgr.WitnessPubKey,
 		expectedScope:      waddrmgr.KeyScopeBIP0084,
-		expectedAddr:       "tltc1q5vepvcl0z8xj7kps4rsux722r4dvfwlh0js2pr",
-		expectedChangeAddr: "tltc1qlwe2kgxcsa8x4huu79yff4rze0l5mwaf3u6qky",
+		expectedAddr:       "tltc1qgzww52d2jswxl5zmnltq0d30txtvyvhy8flfqx",
+		expectedChangeAddr: "tltc1q6erkczs550rzemk8ut54aekhyla5tuqdk8vc08",
 	}}
 )
 
