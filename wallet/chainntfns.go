@@ -23,7 +23,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
-	"github.com/ltcsuite/neutrino/mwebdb"
 	"lukechampine.com/blake3"
 )
 
@@ -707,14 +706,8 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) 
 		if output.MwebOutput == nil {
 			continue
 		}
-		_, err = nc.CS.MwebCoinDB.FetchCoin(output.MwebOutput.Hash())
-
-		switch err {
-		case mwebdb.ErrCoinNotFound:
+		if !nc.CS.MwebUtxoExists(output.MwebOutput.Hash()) {
 			rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: output.OutPoint})
-		case nil:
-		default:
-			return err
 		}
 	}
 
