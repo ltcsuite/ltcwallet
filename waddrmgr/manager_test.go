@@ -3259,6 +3259,7 @@ func TestManagedAddressValidation(t *testing.T) {
 				)
 
 				var addr ManagedAddress
+				var scanKey *btcec.PrivateKey
 
 				// With the scoped managed we created above,
 				// generate a new address.
@@ -3269,6 +3270,17 @@ func TestManagedAddressValidation(t *testing.T) {
 					)
 					if err != nil {
 						return err
+					}
+
+					props, err := scopedMgr.AccountProperties(ns, 0)
+					if err != nil {
+						return err
+					}
+					if props.AccountScanKey != nil {
+						scanKey, err = props.AccountScanKey.ECPrivKey()
+						if err != nil {
+							return err
+						}
 					}
 
 					addr = addrs[0]
@@ -3289,7 +3301,7 @@ func TestManagedAddressValidation(t *testing.T) {
 
 				var msg [32]byte
 				require.ErrorIs(
-					t, pubKeyAddr.Validate(msg, privKeyForAddr, nil),
+					t, pubKeyAddr.Validate(msg, privKeyForAddr, scanKey),
 					testCase.expectedErr,
 				)
 			})

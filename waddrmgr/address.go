@@ -491,7 +491,7 @@ func (a *managedAddress) Validate(msg [32]byte,
 	switch a.addrType {
 	// For the "legacy" addr types, we'll generate an ECDSA signature to
 	// verify against.
-	case NestedWitnessPubKey, PubKeyHash, WitnessPubKey:
+	case NestedWitnessPubKey, PubKeyHash, WitnessPubKey, Mweb:
 		sig = ecdsa.Sign(addrPrivKey, msg[:])
 
 	// For the newer taproot addr type, we'll generate a schnorr signature
