@@ -174,7 +174,7 @@ type ValidatableManagedAddress interface {
 	//
 	//  3. We're able to generate a valid ECDSA/Schnorr signature based on
 	//  the passed private key validated against the internal public key.
-	Validate(msg [32]byte, priv *btcec.PrivateKey) error
+	Validate(msg [32]byte, priv, scan *btcec.PrivateKey) error
 }
 
 // ManagedScriptAddress extends ManagedAddress and represents a pay-to-script-hash
@@ -445,7 +445,9 @@ type signature interface {
 //     the passed private key validated against the internal public key.
 //
 // NOTE: This is part of the ValidatableManagedAddress interface .
-func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
+func (a *managedAddress) Validate(msg [32]byte,
+	priv, scan *btcec.PrivateKey) error {
+
 	// First, we'll obtain the mapping public key from the target private
 	// key. This key should match up with the public key we store
 	// internally.
@@ -466,7 +468,7 @@ func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
 	// This can potentially catch a hardware/software error when mapping
 	// the public key to a Bitcoin address.
 	addr, err := newManagedAddressWithoutPrivKey(
-		a.manager, a.derivationPath, a.pubKey, nil, a.compressed, a.addrType,
+		a.manager, a.derivationPath, a.pubKey, scan, a.compressed, a.addrType,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to re-create addr: %w", err)
@@ -660,7 +662,7 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 
 	// We'll first validate things against the private key we got
 	// from the original derivation.
-	err = managedAddr.Validate(msg, privKey)
+	err = managedAddr.Validate(msg, privKey, scanKey)
 	if err != nil {
 		return nil, fmt.Errorf("addr validation for addr=%v "+
 			"failed: %w", managedAddr.address, err)
@@ -687,7 +689,7 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 	if err != nil {
 		return nil, fmt.Errorf("unable to gen priv key: %w", err)
 	}
-	err = managedAddr.Validate(msg, freshPrivKey)
+	err = managedAddr.Validate(msg, freshPrivKey, scanKey)
 	if err != nil {
 		return nil, fmt.Errorf("addr validation for addr=%v "+
 			"failed after rederiving: %w",
@@ -703,7 +705,8 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 // will only have access to the public key.
 func newManagedAddressFromExtKey(s *ScopedKeyManager,
 	derivationPath DerivationPath, key *hdkeychain.ExtendedKey,
-	addrType AddressType, acctInfo *accountInfo) (managedAddr *managedAddress, err error) {
+	addrType AddressType, acctInfo *accountInfo) (
+	managedAddr *managedAddress, err error) {
 
 	var scanPrivKey *btcec.PrivateKey
 	if acctInfo.scanKey != nil {

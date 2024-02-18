@@ -3289,7 +3289,7 @@ func TestManagedAddressValidation(t *testing.T) {
 
 				var msg [32]byte
 				require.ErrorIs(
-					t, pubKeyAddr.Validate(msg, privKeyForAddr),
+					t, pubKeyAddr.Validate(msg, privKeyForAddr, nil),
 					testCase.expectedErr,
 				)
 			})
