@@ -685,11 +685,23 @@ func getNewAddress(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	if cmd.Account != nil {
 		acctName = *cmd.Account
 	}
-	account, err := w.AccountNumber(waddrmgr.KeyScopeBIP0044, acctName)
+	keyScope := waddrmgr.KeyScopeBIP0044
+	if cmd.AddressType != nil {
+		switch *cmd.AddressType {
+		case "p2sh-segwit":
+			keyScope = waddrmgr.KeyScopeBIP0049Plus
+		case "bech32":
+			keyScope = waddrmgr.KeyScopeBIP0084
+		case "legacy": // default if unset
+		default:
+			return nil, &ErrAddressTypeUnknown
+		}
+	}
+	account, err := w.AccountNumber(keyScope, acctName)
 	if err != nil {
 		return nil, err
 	}
-	addr, err := w.NewAddress(account, waddrmgr.KeyScopeBIP0044)
+	addr, err := w.NewAddress(account, keyScope)
 	if err != nil {
 		return nil, err
 	}
@@ -710,11 +722,23 @@ func getRawChangeAddress(icmd interface{}, w *wallet.Wallet) (interface{}, error
 	if cmd.Account != nil {
 		acctName = *cmd.Account
 	}
-	account, err := w.AccountNumber(waddrmgr.KeyScopeBIP0044, acctName)
+	keyScope := waddrmgr.KeyScopeBIP0044
+	if cmd.AddressType != nil {
+		switch *cmd.AddressType {
+		case "p2sh-segwit":
+			keyScope = waddrmgr.KeyScopeBIP0049Plus
+		case "bech32":
+			keyScope = waddrmgr.KeyScopeBIP0084
+		case "legacy": // default if unset
+		default:
+			return nil, &ErrAddressTypeUnknown
+		}
+	}
+	account, err := w.AccountNumber(keyScope, acctName)
 	if err != nil {
 		return nil, err
 	}
-	addr, err := w.NewChangeAddress(account, waddrmgr.KeyScopeBIP0044)
+	addr, err := w.NewChangeAddress(account, keyScope)
 	if err != nil {
 		return nil, err
 	}
@@ -1049,14 +1073,17 @@ func listLockUnspent(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 
 // listReceivedByAccount handles a listreceivedbyaccount request by returning
 // a slice of objects, each one containing:
-//  "account": the receiving account;
-//  "amount": total amount received by the account;
-//  "confirmations": number of confirmations of the most recent transaction.
+//
+//	"account": the receiving account;
+//	"amount": total amount received by the account;
+//	"confirmations": number of confirmations of the most recent transaction.
+//
 // It takes two parameters:
-//  "minconf": minimum number of confirmations to consider a transaction -
-//             default: one;
-//  "includeempty": whether or not to include addresses that have no transactions -
-//                  default: false.
+//
+//	"minconf": minimum number of confirmations to consider a transaction -
+//	           default: one;
+//	"includeempty": whether or not to include addresses that have no transactions -
+//	                default: false.
 func listReceivedByAccount(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	cmd := icmd.(*btcjson.ListReceivedByAccountCmd)
 
@@ -1080,15 +1107,18 @@ func listReceivedByAccount(icmd interface{}, w *wallet.Wallet) (interface{}, err
 
 // listReceivedByAddress handles a listreceivedbyaddress request by returning
 // a slice of objects, each one containing:
-//  "account": the account of the receiving address;
-//  "address": the receiving address;
-//  "amount": total amount received by the address;
-//  "confirmations": number of confirmations of the most recent transaction.
+//
+//	"account": the account of the receiving address;
+//	"address": the receiving address;
+//	"amount": total amount received by the address;
+//	"confirmations": number of confirmations of the most recent transaction.
+//
 // It takes two parameters:
-//  "minconf": minimum number of confirmations to consider a transaction -
-//             default: one;
-//  "includeempty": whether or not to include addresses that have no transactions -
-//                  default: false.
+//
+//	"minconf": minimum number of confirmations to consider a transaction -
+//	           default: one;
+//	"includeempty": whether or not to include addresses that have no transactions -
+//	                default: false.
 func listReceivedByAddress(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	cmd := icmd.(*btcjson.ListReceivedByAddressCmd)
 
@@ -1542,7 +1572,7 @@ func signMessage(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	}
 
 	var buf bytes.Buffer
-	_ = wire.WriteVarString(&buf, 0, "Bitcoin Signed Message:\n")
+	_ = wire.WriteVarString(&buf, 0, "Litecoin Signed Message:\n")
 	_ = wire.WriteVarString(&buf, 0, cmd.Message)
 	messageHash := chainhash.DoubleHashB(buf.Bytes())
 	sigbytes, err := ecdsa.SignCompact(privKey, messageHash, true)
@@ -1828,7 +1858,7 @@ func verifyMessage(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 	// Validate the signature - this just shows that it was valid at all.
 	// we will compare it with the key next.
 	var buf bytes.Buffer
-	_ = wire.WriteVarString(&buf, 0, "Bitcoin Signed Message:\n")
+	_ = wire.WriteVarString(&buf, 0, "Litecoin Signed Message:\n")
 	_ = wire.WriteVarString(&buf, 0, cmd.Message)
 	expectedMessageHash := chainhash.DoubleHashB(buf.Bytes())
 	pk, wasCompressed, err := ecdsa.RecoverCompact(sig, expectedMessageHash)

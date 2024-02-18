@@ -2,3 +2,5 @@ ltcwallet
 vendor
 .idea
 coverage.txt
+*.swp
+.vscode

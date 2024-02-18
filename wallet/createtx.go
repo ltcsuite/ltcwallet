@@ -106,7 +106,8 @@ func (s secretSource) GetScript(addr ltcutil.Address) ([]byte, error) {
 // NOTE: The dryRun argument can be set true to create a tx that doesn't alter
 // the database. A tx created with this set to true will intentionally have no
 // input scripts added and SHOULD NOT be broadcasted.
-func (w *Wallet) txToOutputs(outputs []*wire.TxOut, keyScope *waddrmgr.KeyScope,
+func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
+	coinSelectKeyScope, changeKeyScope *waddrmgr.KeyScope,
 	account uint32, minconf int32, feeSatPerKb ltcutil.Amount,
 	coinSelectionStrategy CoinSelectionStrategy, dryRun bool) (
 	*txauthor.AuthoredTx, error) {
@@ -125,14 +126,14 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut, keyScope *waddrmgr.KeyScope,
 	var tx *txauthor.AuthoredTx
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
 		addrmgrNs, changeSource, err := w.addrMgrWithChangeSource(
-			dbtx, keyScope, account,
+			dbtx, changeKeyScope, account,
 		)
 		if err != nil {
 			return err
 		}
 
 		eligible, err := w.findEligibleOutputs(
-			dbtx, keyScope, account, minconf, bs,
+			dbtx, coinSelectKeyScope, account, minconf, bs,
 		)
 		if err != nil {
 			return err
@@ -201,17 +202,17 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut, keyScope *waddrmgr.KeyScope,
 		// the inputs are part of a watch-only account, there's no
 		// private key information stored, so we'll skip signing such.
 		var watchOnly bool
-		if keyScope == nil {
+		if coinSelectKeyScope == nil {
 			// If a key scope wasn't specified, then coin selection
 			// was performed from the default wallet accounts
-			// (NP2WKH, P2WKH), so any key scope provided doesn't
-			// impact the result of this call.
+			// (NP2WKH, P2WKH, P2TR), so any key scope provided
+			// doesn't impact the result of this call.
 			watchOnly, err = w.Manager.IsWatchOnlyAccount(
-				addrmgrNs, waddrmgr.KeyScopeBIP0084, account,
+				addrmgrNs, waddrmgr.KeyScopeBIP0086, account,
 			)
 		} else {
 			watchOnly, err = w.Manager.IsWatchOnlyAccount(
-				addrmgrNs, *keyScope, account,
+				addrmgrNs, *coinSelectKeyScope, account,
 			)
 		}
 		if err != nil {
@@ -352,9 +353,10 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 	changeKeyScope *waddrmgr.KeyScope, account uint32) (
 	walletdb.ReadWriteBucket, *txauthor.ChangeSource, error) {
 
-	// Determine the address type for change addresses of the given account.
+	// Determine the address type for change addresses of the given
+	// account.
 	if changeKeyScope == nil {
-		changeKeyScope = &waddrmgr.KeyScopeBIP0084
+		changeKeyScope = &waddrmgr.KeyScopeBIP0086
 	}
 	addrType := waddrmgr.ScopeAddrMap[*changeKeyScope].InternalAddrType
 
@@ -382,6 +384,8 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 		scriptSize = txsizes.NestedP2WPKHPkScriptSize
 	case waddrmgr.WitnessPubKey:
 		scriptSize = txsizes.P2WPKHPkScriptSize
+	case waddrmgr.TaprootPubKey:
+		scriptSize = txsizes.P2TRPkScriptSize
 	}
 
 	newChangeScript := func() ([]byte, error) {
@@ -416,11 +420,22 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 // validateMsgTx verifies transaction input scripts for tx.  All previous output
 // scripts from outputs redeemed by the transaction, in the same order they are
 // spent, must be passed in the prevScripts slice.
-func validateMsgTx(tx *wire.MsgTx, prevScripts [][]byte, inputValues []ltcutil.Amount) error {
-	hashCache := txscript.NewTxSigHashes(tx)
+func validateMsgTx(tx *wire.MsgTx, prevScripts [][]byte,
+	inputValues []ltcutil.Amount) error {
+
+	inputFetcher, err := txauthor.TXPrevOutFetcher(
+		tx, prevScripts, inputValues,
+	)
+	if err != nil {
+		return err
+	}
+
+	hashCache := txscript.NewTxSigHashes(tx, inputFetcher)
 	for i, prevScript := range prevScripts {
-		vm, err := txscript.NewEngine(prevScript, tx, i,
-			txscript.StandardVerifyFlags, nil, hashCache, int64(inputValues[i]))
+		vm, err := txscript.NewEngine(
+			prevScript, tx, i, txscript.StandardVerifyFlags, nil,
+			hashCache, int64(inputValues[i]), inputFetcher,
+		)
 		if err != nil {
 			return fmt.Errorf("cannot create script engine: %s", err)
 		}

@@ -55,6 +55,9 @@ func keyScopeFromPubKey(pubKey *hdkeychain.ExtendedKey,
 		case waddrmgr.WitnessPubKey:
 			return waddrmgr.KeyScopeBIP0084, nil, nil
 
+		case waddrmgr.TaprootPubKey:
+			return waddrmgr.KeyScopeBIP0086, nil, nil
+
 		default:
 			return waddrmgr.KeyScope{}, nil,
 				fmt.Errorf("unsupported address type %v",
@@ -86,12 +89,27 @@ func keyScopeFromPubKey(pubKey *hdkeychain.ExtendedKey,
 					*addrType)
 		}
 
+	// BIP-0086 does not have its own SLIP-0132 HD version byte set (yet?).
+	// So we either expect a user to import it with a BIP-0084 or BIP-0044
+	// encoding.
 	case waddrmgr.HDVersionMainNetBIP0084, waddrmgr.HDVersionTestNetBIP0084:
-		if addrType != nil && *addrType != waddrmgr.WitnessPubKey {
+		if addrType == nil {
+			return waddrmgr.KeyScope{}, nil, errors.New("address " +
+				"type must be specified for account public " +
+				"key with BIP-0084 version")
+		}
+
+		switch *addrType {
+		case waddrmgr.WitnessPubKey:
+			return waddrmgr.KeyScopeBIP0084, nil, nil
+
+		case waddrmgr.TaprootPubKey:
+			return waddrmgr.KeyScopeBIP0086, nil, nil
+
+		default:
 			return waddrmgr.KeyScope{}, nil,
 				errors.New("address type mismatch")
 		}
-		return waddrmgr.KeyScopeBIP0084, nil, nil
 
 	default:
 		return waddrmgr.KeyScope{}, nil, fmt.Errorf("unknown version %x",
@@ -109,7 +127,7 @@ func (w *Wallet) isPubKeyForNet(pubKey *hdkeychain.ExtendedKey) bool {
 			version == waddrmgr.HDVersionMainNetBIP0049 ||
 			version == waddrmgr.HDVersionMainNetBIP0084
 
-	case wire.TestNet, wire.TestNet3, wire.TestNet4, netparams.SigNetWire(w.chainParams):
+	case wire.TestNet, wire.TestNet4, netparams.SigNetWire(w.chainParams):
 		return version == waddrmgr.HDVersionTestNetBIP0044 ||
 			version == waddrmgr.HDVersionTestNetBIP0049 ||
 			version == waddrmgr.HDVersionTestNetBIP0084
@@ -371,8 +389,13 @@ func (w *Wallet) ImportPublicKey(pubKey *btcec.PublicKey,
 	switch addrType {
 	case waddrmgr.NestedWitnessPubKey:
 		keyScope = waddrmgr.KeyScopeBIP0049Plus
+
 	case waddrmgr.WitnessPubKey:
 		keyScope = waddrmgr.KeyScopeBIP0084
+
+	case waddrmgr.TaprootPubKey:
+		keyScope = waddrmgr.KeyScopeBIP0086
+
 	default:
 		return fmt.Errorf("address type %v is not supported", addrType)
 	}
@@ -402,6 +425,59 @@ func (w *Wallet) ImportPublicKey(pubKey *btcec.PublicKey,
 	}
 
 	return nil
+}
+
+// ImportTaprootScript imports a user-provided taproot script into the address
+// manager. The imported script will act as a pay-to-taproot address.
+func (w *Wallet) ImportTaprootScript(scope waddrmgr.KeyScope,
+	tapscript *waddrmgr.Tapscript, bs *waddrmgr.BlockStamp,
+	witnessVersion byte, isSecretScript bool) (waddrmgr.ManagedAddress,
+	error) {
+
+	manager, err := w.Manager.FetchScopedKeyManager(scope)
+	if err != nil {
+		return nil, err
+	}
+
+	// The starting block for the key is the genesis block unless otherwise
+	// specified.
+	if bs == nil {
+		bs = &waddrmgr.BlockStamp{
+			Hash:      *w.chainParams.GenesisHash,
+			Height:    0,
+			Timestamp: w.chainParams.GenesisBlock.Header.Timestamp,
+		}
+	} else if bs.Timestamp.IsZero() {
+		// Only update the new birthday time from default value if we
+		// actually have timestamp info in the header.
+		header, err := w.chainClient.GetBlockHeader(&bs.Hash)
+		if err == nil {
+			bs.Timestamp = header.Timestamp
+		}
+	}
+
+	// TODO: Perform rescan if requested.
+	var addr waddrmgr.ManagedAddress
+	err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+		ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+		addr, err = manager.ImportTaprootScript(
+			ns, tapscript, bs, witnessVersion, isSecretScript,
+		)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	log.Infof("Imported address %v", addr.Address())
+
+	err = w.chainClient.NotifyReceived([]ltcutil.Address{addr.Address()})
+	if err != nil {
+		return nil, fmt.Errorf("unable to subscribe for address "+
+			"notifications: %v", err)
+	}
+
+	return addr, nil
 }
 
 // ImportPrivateKey imports a private key to the wallet and writes the new

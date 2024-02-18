@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -49,6 +50,10 @@ const (
 	// scanned successively by the recovery manager, in the event that the
 	// wallet is started in recovery mode.
 	recoveryBatchSize = 2000
+
+	// defaultSyncRetryInterval is the default amount of time to wait
+	// between re-tries on errors during initial sync.
+	defaultSyncRetryInterval = 5 * time.Second
 )
 
 var (
@@ -71,6 +76,9 @@ var (
 	// and an attempt has been made to label it without setting overwrite
 	// to true.
 	ErrTxLabelExists = errors.New("transaction already labelled")
+
+	// ErrNoTx is returned when a transaction can not be found.
+	ErrNoTx = errors.New("can not find transaction")
 
 	// ErrTxUnsigned is returned when a transaction is created in the
 	// watch-only mode where we can select coins but not sign any inputs.
@@ -113,6 +121,7 @@ type Wallet struct {
 	lockedOutpoints    map[wire.OutPoint]struct{}
 	lockedOutpointsMtx sync.Mutex
 
+	recovering     atomic.Value
 	recoveryWindow uint32
 
 	// Channels for rescan processing.  Requests are added and merged with
@@ -143,6 +152,10 @@ type Wallet struct {
 	started bool
 	quit    chan struct{}
 	quitMu  sync.Mutex
+
+	// syncRetryInterval is the amount of time to wait between re-tries on
+	// errors during initial sync.
+	syncRetryInterval time.Duration
 }
 
 // Start starts the goroutines necessary to manage a wallet.
@@ -651,6 +664,15 @@ func locateBirthdayBlock(chainClient chainConn,
 	return birthdayBlock, nil
 }
 
+// recoverySyncer is used to synchronize wallet and address manager locking
+// with the end of recovery. (*Wallet).recovery will store a recoverySyncer
+// when invoked, and will close the done chan upon exit. Setting the quit flag
+// will cause recovery to end after the current batch of blocks.
+type recoverySyncer struct {
+	done chan struct{}
+	quit uint32 // atomic
+}
+
 // recovery attempts to recover any unspent outputs that pay to any of our
 // addresses starting from our birthday, or the wallet's tip (if higher), which
 // would indicate resuming a recovery after a restart.
@@ -659,6 +681,13 @@ func (w *Wallet) recovery(chainClient chain.Interface,
 
 	log.Infof("RECOVERY MODE ENABLED -- rescanning for used addresses "+
 		"with recovery_window=%d", w.recoveryWindow)
+
+	// Wallet locking must synchronize with the end of recovery, since use of
+	// keys in recovery is racy with manager IsLocked checks, which could
+	// result in enrypting data with a zeroed key.
+	syncer := &recoverySyncer{done: make(chan struct{})}
+	w.recovering.Store(syncer)
+	defer close(syncer.done)
 
 	// We'll initialize the recovery manager with a default batch size of
 	// 2000.
@@ -707,6 +736,10 @@ func (w *Wallet) recovery(chainClient chain.Interface,
 	var blocks []*waddrmgr.BlockStamp
 	startHeight := w.Manager.SyncedTo().Height + 1
 	for height := startHeight; height <= bestHeight; height++ {
+		if atomic.LoadUint32(&syncer.quit) == 1 {
+			return errors.New("recovery: forced shutdown")
+		}
+
 		hash, err := chainClient.GetBlockHash(int64(height))
 		if err != nil {
 			return err
@@ -773,13 +806,13 @@ func (w *Wallet) recovery(chainClient chain.Interface,
 // previously used addresses for a particular account derivation path. At a high
 // level, the algorithm works as follows:
 //
-//  1) Ensure internal and external branch horizons are fully expanded.
-//  2) Filter the entire range of blocks, stopping if a non-zero number of
-//       address are contained in a particular block.
-//  3) Record all internal and external addresses found in the block.
-//  4) Record any outpoints found in the block that should be watched for spends
-//  5) Trim the range of blocks up to and including the one reporting the addrs.
-//  6) Repeat from (1) if there are still more blocks in the range.
+//  1. Ensure internal and external branch horizons are fully expanded.
+//  2. Filter the entire range of blocks, stopping if a non-zero number of
+//     address are contained in a particular block.
+//  3. Record all internal and external addresses found in the block.
+//  4. Record any outpoints found in the block that should be watched for spends
+//  5. Trim the range of blocks up to and including the one reporting the addrs.
+//  6. Repeat from (1) if there are still more blocks in the range.
 //
 // TODO(conner): parallelize/pipeline/cache intermediate network requests
 func (w *Wallet) recoverScopedAddresses(
@@ -1142,7 +1175,8 @@ func logFilterBlocksResp(block wtxmgr.BlockMeta,
 
 type (
 	createTxRequest struct {
-		keyScope              *waddrmgr.KeyScope
+		coinSelectKeyScope    *waddrmgr.KeyScope
+		changeKeyScope        *waddrmgr.KeyScope
 		account               uint32
 		outputs               []*wire.TxOut
 		minconf               int32
@@ -1188,8 +1222,8 @@ out:
 			}
 
 			tx, err := w.txToOutputs(
-				txr.outputs, txr.keyScope, txr.account,
-				txr.minconf, txr.feeSatPerKB,
+				txr.outputs, txr.coinSelectKeyScope, txr.changeKeyScope,
+				txr.account, txr.minconf, txr.feeSatPerKB,
 				txr.coinSelectionStrategy, txr.dryRun,
 			)
 
@@ -1200,6 +1234,33 @@ out:
 		}
 	}
 	w.wg.Done()
+}
+
+// txCreateOptions is a set of optional arguments to modify the tx creation
+// process. This can be used to do things like use a custom coin selection
+// scope, which otherwise will default to the specified coin selection scope.
+type txCreateOptions struct {
+	changeKeyScope *waddrmgr.KeyScope
+}
+
+// TxCreateOption is a set of optional arguments to modify the tx creation
+// process. This can be used to do things like use a custom coin selection
+// scope, which otherwise will default to the specified coin selection scope.
+type TxCreateOption func(*txCreateOptions)
+
+// defaultTxCreateOptions is the default set of options.
+func defaultTxCreateOptions() *txCreateOptions {
+	return &txCreateOptions{}
+}
+
+// WithCustomChangeScope can be used to specify a change scope for the change
+// address. If unspecified, then the same scope will be used for both inputs
+// and the change addr. Not specifying any scope at all (nil) will use all
+// available coins and the default change scope (P2TR).
+func WithCustomChangeScope(changeScope *waddrmgr.KeyScope) TxCreateOption {
+	return func(opts *txCreateOptions) {
+		opts.changeKeyScope = changeScope
+	}
 }
 
 // CreateSimpleTx creates a new signed transaction spending unspent outputs with
@@ -1213,15 +1274,31 @@ out:
 // transaction creation through this function is serialized to prevent the
 // creation of many transactions which spend the same outputs.
 //
+// A set of functional options can be passed in to apply modifications to the
+// tx creation process such as using a custom change scope, which otherwise
+// defaults to the same as the specified coin selection scope.
+//
 // NOTE: The dryRun argument can be set true to create a tx that doesn't alter
-// the database. A tx created with this set to true SHOULD NOT be broadcasted.
-func (w *Wallet) CreateSimpleTx(keyScope *waddrmgr.KeyScope, account uint32,
-	outputs []*wire.TxOut, minconf int32, satPerKb ltcutil.Amount,
-	coinSelectionStrategy CoinSelectionStrategy, dryRun bool) (
-	*txauthor.AuthoredTx, error) {
+// the database. A tx created with this set to true SHOULD NOT be broadcast.
+func (w *Wallet) CreateSimpleTx(coinSelectKeyScope *waddrmgr.KeyScope,
+	account uint32, outputs []*wire.TxOut, minconf int32,
+	satPerKb ltcutil.Amount, coinSelectionStrategy CoinSelectionStrategy,
+	dryRun bool, optFuncs ...TxCreateOption) (*txauthor.AuthoredTx, error) {
+
+	opts := defaultTxCreateOptions()
+	for _, optFunc := range optFuncs {
+		optFunc(opts)
+	}
+
+	// If the change scope isn't set, then it should be the same as the
+	// coin selection scope in order to match existing behavior.
+	if opts.changeKeyScope == nil {
+		opts.changeKeyScope = coinSelectKeyScope
+	}
 
 	req := createTxRequest{
-		keyScope:              keyScope,
+		coinSelectKeyScope:    coinSelectKeyScope,
+		changeKeyScope:        opts.changeKeyScope,
 		account:               account,
 		outputs:               outputs,
 		minconf:               minconf,
@@ -1351,6 +1428,23 @@ out:
 
 		// Select statement fell through by an explicit lock or the
 		// timer expiring.  Lock the manager here.
+
+		// We can't lock the manager if recovery is active because we use
+		// cryptoKeyPriv and cryptoKeyScript in recovery.
+		if recoverySyncI := w.recovering.Load(); recoverySyncI != nil {
+			recoverySync := recoverySyncI.(*recoverySyncer)
+			// If recovery is still running, it will end early with an error
+			// once we set the quit flag.
+			atomic.StoreUint32(&recoverySync.quit, 1)
+
+			select {
+			case <-recoverySync.done:
+			case <-quit:
+				break out
+			}
+
+		}
+
 		timeout = nil
 		err := w.Manager.Lock()
 		if err != nil && !waddrmgr.IsError(err, waddrmgr.ErrLocked) {
@@ -2373,13 +2467,63 @@ func (w *Wallet) GetTransactions(startBlock, endBlock *BlockIdentifier,
 	return &res, err
 }
 
+// GetTransactionResult returns a summary of the transaction along with
+// other block properties.
+type GetTransactionResult struct {
+	Summary       TransactionSummary
+	Height        int32
+	BlockHash     *chainhash.Hash
+	Confirmations int32
+	Timestamp     int64
+}
+
+// GetTransaction returns detailed data of a transaction given its id. In addition it
+// returns properties about its block.
+func (w *Wallet) GetTransaction(txHash chainhash.Hash) (*GetTransactionResult,
+	error) {
+
+	var res GetTransactionResult
+	err := walletdb.View(w.db, func(dbtx walletdb.ReadTx) error {
+		txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+
+		txDetail, err := w.TxStore.TxDetails(txmgrNs, &txHash)
+		if err != nil {
+			return err
+		}
+
+		// If the transaction was not found we return an error.
+		if txDetail == nil {
+			return fmt.Errorf("%w: txid %v", ErrNoTx, txHash)
+		}
+
+		res = GetTransactionResult{
+			Summary:       makeTxSummary(dbtx, w, txDetail),
+			Timestamp:     txDetail.Block.Time.Unix(),
+			Confirmations: txDetail.Block.Height,
+		}
+
+		// If it is a confirmed transaction we set the corresponding
+		// block height and hash.
+		if txDetail.Block.Height != -1 {
+			res.Height = txDetail.Block.Height
+			res.BlockHash = &txDetail.Block.Hash
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 // AccountResult is a single account result for the AccountsResult type.
 type AccountResult struct {
 	waddrmgr.AccountProperties
 	TotalBalance ltcutil.Amount
 }
 
-// AccountsResult is the resutl of the wallet's Accounts method.  See that
+// AccountsResult is the result of the wallet's Accounts method.  See that
 // method for more details.
 type AccountsResult struct {
 	Accounts           []AccountResult
@@ -2709,17 +2853,52 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 	return results, err
 }
 
+// ListLeasedOutputResult is a single result for the Wallet.ListLeasedOutputs method.
+// See that method for more details.
+type ListLeasedOutputResult struct {
+	*wtxmgr.LockedOutput
+	Value    int64
+	PkScript []byte
+}
+
 // ListLeasedOutputs returns a list of objects representing the currently locked
 // utxos.
-func (w *Wallet) ListLeasedOutputs() ([]*wtxmgr.LockedOutput, error) {
-	var outputs []*wtxmgr.LockedOutput
+func (w *Wallet) ListLeasedOutputs() ([]*ListLeasedOutputResult, error) {
+	var results []*ListLeasedOutputResult
 	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
 		ns := tx.ReadBucket(wtxmgrNamespaceKey)
-		var err error
-		outputs, err = w.TxStore.ListLockedOutputs(ns)
-		return err
+		outputs, err := w.TxStore.ListLockedOutputs(ns)
+		if err != nil {
+			return err
+		}
+
+		for _, output := range outputs {
+			details, err := w.TxStore.TxDetails(ns, &output.Outpoint.Hash)
+			if err != nil {
+				return err
+			}
+
+			if details == nil {
+				log.Infof("unable to find tx details for "+
+					"%v:%v", output.Outpoint.Hash,
+					output.Outpoint.Index)
+				continue
+			}
+
+			txOut := details.MsgTx.TxOut[output.Outpoint.Index]
+
+			result := &ListLeasedOutputResult{
+				LockedOutput: output,
+				Value:        txOut.Value,
+				PkScript:     txOut.PkScript,
+			}
+
+			results = append(results, result)
+		}
+
+		return nil
 	})
-	return outputs, err
+	return results, err
 }
 
 // DumpPrivKeys returns the WIF-encoded private keys for all addresses with
@@ -3259,6 +3438,7 @@ func (w *Wallet) SignTransaction(tx *wire.MsgTx, hashType txscript.SigHashType,
 		addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 		txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
+		inputFetcher := txscript.NewMultiPrevOutFetcher(nil)
 		for i, txIn := range tx.TxIn {
 			prevOutScript, ok := additionalPrevScripts[txIn.PreviousOutPoint]
 			if !ok {
@@ -3275,6 +3455,9 @@ func (w *Wallet) SignTransaction(tx *wire.MsgTx, hashType txscript.SigHashType,
 				}
 				prevOutScript = txDetails.MsgTx.TxOut[prevIndex].PkScript
 			}
+			inputFetcher.AddPrevOut(txIn.PreviousOutPoint, &wire.TxOut{
+				PkScript: prevOutScript,
+			})
 
 			// Set up our callbacks that we pass to txscript so it can
 			// look up the appropriate keys and scripts by address.
@@ -3353,8 +3536,11 @@ func (w *Wallet) SignTransaction(tx *wire.MsgTx, hashType txscript.SigHashType,
 
 			// Either it was already signed or we just signed it.
 			// Find out if it is completely satisfied or still needs more.
-			vm, err := txscript.NewEngine(prevOutScript, tx, i,
-				txscript.StandardVerifyFlags, nil, nil, 0)
+			vm, err := txscript.NewEngine(
+				prevOutScript, tx, i,
+				txscript.StandardVerifyFlags, nil, nil, 0,
+				inputFetcher,
+			)
 			if err == nil {
 				err = vm.Execute()
 			}
@@ -3405,6 +3591,61 @@ func (e *ErrReplacement) Error() string {
 
 // Unwrap returns the underlying error returned from the backend.
 func (e *ErrReplacement) Unwrap() error {
+	return e.backendError
+}
+
+// ErrMempoolFee is an error returned from PublishTransaction in case the
+// published transaction failed to propagate since it did not match the
+// current mempool fee requirement.
+type ErrMempoolFee struct {
+	backendError error
+}
+
+// Error returns the string representation of ErrMempoolFee.
+//
+// NOTE: Satisfies the error interface.
+func (e *ErrMempoolFee) Error() string {
+	return fmt.Sprintf("mempool fee not met: %v", e.backendError)
+}
+
+// Unwrap returns the underlying error returned from the backend.
+func (e *ErrMempoolFee) Unwrap() error {
+	return e.backendError
+}
+
+// ErrAlreadyConfirmed is an error returned from PublishTransaction in case
+// a transaction is already confirmed in the blockchain.
+type ErrAlreadyConfirmed struct {
+	backendError error
+}
+
+// Error returns the string representation of ErrAlreadyConfirmed.
+//
+// NOTE: Satisfies the error interface.
+func (e *ErrAlreadyConfirmed) Error() string {
+	return fmt.Sprintf("tx already confirmed: %v", e.backendError)
+}
+
+// Unwrap returns the underlying error returned from the backend.
+func (e *ErrAlreadyConfirmed) Unwrap() error {
+	return e.backendError
+}
+
+// ErrInMempool is an error returned from PublishTransaction in case a
+// transaction is already in the mempool.
+type ErrInMempool struct {
+	backendError error
+}
+
+// Error returns the string representation of ErrInMempool.
+//
+// NOTE: Satisfies the error interface.
+func (e *ErrInMempool) Error() string {
+	return fmt.Sprintf("tx already in mempool: %v", e.backendError)
+}
+
+// Unwrap returns the underlying error returned from the backend.
+func (e *ErrInMempool) Unwrap() error {
 	return e.backendError
 }
 
@@ -3468,19 +3709,16 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 			}
 		}
 
-		if err := w.addRelevantTx(dbTx, txRec, nil); err != nil {
-			return err
-		}
-
-		// If the tx label is empty, we can return early.
-		if len(label) == 0 {
-			return nil
-		}
-
 		// If there is a label we should write, get the namespace key
 		// and record it in the tx store.
-		txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
-		return w.TxStore.PutTxLabel(txmgrNs, tx.TxHash(), label)
+		if len(label) != 0 {
+			txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
+			if err = w.TxStore.PutTxLabel(txmgrNs, tx.TxHash(), label); err != nil {
+				return err
+			}
+		}
+
+		return w.addRelevantTx(dbTx, txRec, nil)
 	})
 	if err != nil {
 		return nil, err
@@ -3506,69 +3744,27 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 		return nil, err
 	}
 
-	// match is a helper method to easily string match on the error
-	// message.
-	match := func(err error, s string) bool {
-		return strings.Contains(strings.ToLower(err.Error()), s)
-	}
-
-	_, err = chainClient.SendRawTransaction(tx, false)
-
-	// Determine if this was an RPC error thrown due to the transaction
-	// already confirming.
-	var rpcTxConfirmed bool
-	if rpcErr, ok := err.(*btcjson.RPCError); ok {
-		rpcTxConfirmed = rpcErr.Code == btcjson.ErrRPCTxAlreadyInChain
-	}
-
 	var (
 		txid      = tx.TxHash()
 		returnErr error
 	)
 
+	_, err = chainClient.SendRawTransaction(tx, false)
+	if err == nil {
+		return &txid, nil
+	}
+
+	returnErr = MapBroadcastBackendError(err)
+
+	var errInMempool *ErrInMempool
+	var errAlreadyConfirmed *ErrAlreadyConfirmed
+
 	switch {
-	case err == nil:
+	case errors.As(returnErr, &errInMempool):
+		log.Infof("%v: tx already in mempool", txid)
 		return &txid, nil
 
-	// Since we have different backends that can be used with the wallet,
-	// we'll need to check specific errors for each one.
-	//
-	// If the transaction is already in the mempool, we can just return now.
-	//
-	// This error is returned when broadcasting/sending a transaction to a
-	// btcd node that already has it in their mempool.
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L953
-	case match(err, "already have transaction"):
-		fallthrough
-
-	// This error is returned when broadcasting a transaction to a bitcoind
-	// node that already has it in their mempool.
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L590
-	case match(err, "txn-already-in-mempool"):
-		return &txid, nil
-
-	// If the transaction has already confirmed, we can safely remove it
-	// from the unconfirmed store as it should already exist within the
-	// confirmed store. We'll avoid returning an error as the broadcast was
-	// in a sense successful.
-	//
-	// This error is returned when sending a transaction that has already
-	// confirmed to a btcd/bitcoind node over RPC.
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/rpcserver.go#L3355
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/node/transaction.cpp#L36
-	case rpcTxConfirmed:
-		fallthrough
-
-	// This error is returned when broadcasting a transaction that has
-	// already confirmed to a btcd node over the P2P network.
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1036
-	case match(err, "transaction already exists"):
-		fallthrough
-
-	// This error is returned when broadcasting a transaction that has
-	// already confirmed to a bitcoind node over the P2P network.
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L648
-	case match(err, "txn-already-known"):
+	case errors.As(returnErr, &errAlreadyConfirmed):
 		dbErr := walletdb.Update(w.db, func(dbTx walletdb.ReadWriteTx) error {
 			txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
 			txRec, err := wtxmgr.NewTxRecordFromMsgTx(tx, time.Now())
@@ -3582,92 +3778,14 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 				"from unconfirmed store: %v", tx.TxHash(), dbErr)
 		}
 
+		log.Infof("%v: tx already confirmed", txid)
+
 		return &txid, nil
 
-	// If the transactions is invalid since it attempts to double spend a
-	// transaction already in the mempool or in the chain, we'll remove it
-	// from the store and return an error.
-	//
-	// This error is returned from btcd when there is already a transaction
-	// not signaling replacement in the mempool that spends one of the
-	// referenced outputs.
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L591
-	case match(err, "already spent"):
-		fallthrough
-
-	// This error is returned from btcd when a referenced output cannot be
-	// found, meaning it etiher has been spent or doesn't exist.
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/blockchain/chain.go#L405
-	case match(err, "already been spent"):
-		fallthrough
-
-	// This error is returned from btcd when a transaction is spending
-	// either output that is missing or already spent, and orphans aren't
-	// allowed.
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1409
-	case match(err, "orphan transaction"):
-		fallthrough
-
-	// Error returned from bitcoind when output was spent by other
-	// non-replacable transaction already in the mempool.
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L622
-	case match(err, "txn-mempool-conflict"):
-		fallthrough
-
-	// Returned by bitcoind on the RPC when broadcasting a transaction that
-	// is spending either output that is missing or already spent.
-	//
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/node/transaction.cpp#L49
-	// https://github.com/bitcoin/bitcoin/blob/0.20/src/validation.cpp#L642
-	case match(err, "missing inputs") ||
-		match(err, "bad-txns-inputs-missingorspent"):
-
-		returnErr = &ErrDoubleSpend{
-			backendError: err,
-		}
-
-	// Returned by bitcoind if the transaction spends outputs that would be
-	// replaced by it.
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L790
-	case match(err, "bad-txns-spends-conflicting-tx"):
-		fallthrough
-
-	// Returned by bitcoind when a replacement transaction did not have
-	// enough fee.
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L830
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L894
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L904
-	case match(err, "insufficient fee"):
-		fallthrough
-
-	// Returned by bitcoind in case the transaction would replace too many
-	// transaction in the mempool.
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L858
-	case match(err, "too many potential replacements"):
-		fallthrough
-
-	// Returned by bitcoind if the transaction spends an output that is
-	// unconfimed and not spent by the transaction it replaces.
-	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L882
-	case match(err, "replacement-adds-unconfirmed"):
-		fallthrough
-
-	// Returned by btcd when replacement transaction was rejected for
-	// whatever reason.
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L841
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L854
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L875
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L896
-	// https://github.com/ltcsuite/ltcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L913
-	case match(err, "replacement transaction"):
-		returnErr = &ErrReplacement{
-			backendError: err,
-		}
-
-	// We received an error not matching any of the above cases.
-	default:
-		returnErr = fmt.Errorf("unmatched backend error: %v", err)
 	}
+
+	// Log the causing error, even if we know how to handle it.
+	log.Infof("%v: broadcast failed because of: %v", txid, returnErr)
 
 	// If the transaction was rejected for whatever other reason, then
 	// we'll remove it from the transaction store, as otherwise, we'll
@@ -3685,8 +3803,15 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 		log.Warnf("Unable to remove invalid transaction %v: %v",
 			tx.TxHash(), dbErr)
 	} else {
-		log.Infof("Removed invalid transaction: %v",
-			spew.Sdump(tx))
+		// The spew output is pretty nice to directly see how many
+		// inputs/outputs of what type there are.
+		log.Infof("Removed invalid transaction: %v", spew.Sdump(tx))
+
+		// The serialized transaction is for logging only, don't fail on
+		// the error.
+		var txRaw bytes.Buffer
+		_ = tx.Serialize(&txRaw)
+		log.Infof("Removed invalid transaction: %x", txRaw.Bytes())
 	}
 
 	return nil, returnErr
@@ -3817,6 +3942,18 @@ func create(db walletdb.DB, pubPass, privPass []byte,
 func Open(db walletdb.DB, pubPass []byte, cbs *waddrmgr.OpenCallbacks,
 	params *chaincfg.Params, recoveryWindow uint32) (*Wallet, error) {
 
+	return OpenWithRetry(
+		db, pubPass, cbs, params, recoveryWindow,
+		defaultSyncRetryInterval,
+	)
+}
+
+// OpenWithRetry loads an already-created wallet from the passed database and
+// namespaces and re-tries on errors during initial sync.
+func OpenWithRetry(db walletdb.DB, pubPass []byte, cbs *waddrmgr.OpenCallbacks,
+	params *chaincfg.Params, recoveryWindow uint32,
+	syncRetryInterval time.Duration) (*Wallet, error) {
+
 	var (
 		addrMgr *waddrmgr.Manager
 		txMgr   *wtxmgr.Store
@@ -3881,6 +4018,7 @@ func Open(db walletdb.DB, pubPass []byte, cbs *waddrmgr.OpenCallbacks,
 		changePassphrases:   make(chan changePassphrasesRequest),
 		chainParams:         params,
 		quit:                make(chan struct{}),
+		syncRetryInterval:   syncRetryInterval,
 	}
 
 	w.NtfnServer = newNotificationServer(w)
@@ -3889,4 +4027,190 @@ func Open(db walletdb.DB, pubPass []byte, cbs *waddrmgr.OpenCallbacks,
 	}
 
 	return w, nil
+}
+
+// MapBroadcastBackendError maps the different backend errors when broadcasting
+// a transaction to the bitcoin network to an internal error type.
+func MapBroadcastBackendError(err error) error {
+	// match is a helper method to easily string match on the error
+	// message.
+	match := func(err error, s string) bool {
+		return strings.Contains(strings.ToLower(err.Error()), s)
+	}
+
+	// Determine if this was an RPC error thrown due to the transaction
+	// already confirming.
+	var rpcTxConfirmed bool
+	if rpcErr, ok := err.(*btcjson.RPCError); ok {
+		rpcTxConfirmed = rpcErr.Code == btcjson.ErrRPCTxAlreadyInChain
+	}
+
+	var returnErr error
+
+	switch {
+	case err == nil:
+		return nil
+
+	// Since we have different backends that can be used with the wallet,
+	// we'll need to check specific errors for each one.
+	//
+	// If the transaction is already in the mempool, we can just return now.
+	//
+	// This error is returned when broadcasting/sending a transaction to a
+	// btcd node that already has it in their mempool.
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L953
+	case match(err, "already have transaction"):
+		fallthrough
+
+	// This error is returned when broadcasting a transaction to a bitcoind
+	// node that already has it in their mempool.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L590
+	case match(err, "txn-already-in-mempool"):
+		return &ErrInMempool{
+			backendError: err,
+		}
+
+	// If the transaction has already confirmed, we can safely remove it
+	// from the unconfirmed store as it should already exist within the
+	// confirmed store. We'll avoid returning an error as the broadcast was
+	// in a sense successful.
+	//
+	// This error is returned when sending a transaction that has already
+	// confirmed to a btcd/bitcoind node over RPC.
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/rpcserver.go#L3355
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/node/transaction.cpp#L36
+	case rpcTxConfirmed:
+		fallthrough
+
+	// This error is returned when broadcasting a transaction that has
+	// already confirmed to a btcd node over the P2P network.
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1036
+	case match(err, "transaction already exists"):
+		fallthrough
+
+	// This error is returned when broadcasting a transaction that has
+	// already confirmed to a bitcoind node over the P2P network.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L648
+	case match(err, "txn-already-known"):
+		return &ErrAlreadyConfirmed{
+			backendError: err,
+		}
+
+	// If the transactions is invalid since it attempts to double spend a
+	// transaction already in the mempool or in the chain, we'll remove it
+	// from the store and return an error.
+	//
+	// This error is returned from btcd when there is already a transaction
+	// not signaling replacement in the mempool that spends one of the
+	// referenced outputs.
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L591
+	case match(err, "already spent"):
+		fallthrough
+
+	// This error is returned from btcd when a referenced output cannot be
+	// found, meaning it etiher has been spent or doesn't exist.
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/blockchain/chain.go#L405
+	case match(err, "already been spent"):
+		fallthrough
+
+	// This error is returned from btcd when a transaction is spending
+	// either output that is missing or already spent, and orphans aren't
+	// allowed.
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L1409
+	case match(err, "orphan transaction"):
+		fallthrough
+
+	// Error returned from bitcoind when output was spent by other
+	// non-replacable transaction already in the mempool.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L622
+	case match(err, "txn-mempool-conflict"):
+		fallthrough
+
+	// Returned by bitcoind on the RPC when broadcasting a transaction that
+	// is spending either output that is missing or already spent.
+	//
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/node/transaction.cpp#L49
+	// https://github.com/bitcoin/bitcoin/blob/0.20/src/validation.cpp#L642
+	case match(err, "missing inputs") ||
+		match(err, "bad-txns-inputs-missingorspent"):
+
+		returnErr = &ErrDoubleSpend{
+			backendError: err,
+		}
+
+	// Returned by bitcoind if the transaction spends outputs that would be
+	// replaced by it.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L790
+	case match(err, "bad-txns-spends-conflicting-tx"):
+		fallthrough
+
+	// Returned by bitcoind when a replacement transaction did not have
+	// enough fee.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L830
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L894
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L904
+	case match(err, "insufficient fee"):
+		fallthrough
+
+	// Returned by bitcoind in case the transaction would replace too many
+	// transaction in the mempool.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L858
+	case match(err, "too many potential replacements"):
+		fallthrough
+
+	// Returned by bitcoind if the transaction spends an output that is
+	// unconfimed and not spent by the transaction it replaces.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L882
+	case match(err, "replacement-adds-unconfirmed"):
+		fallthrough
+
+	// Returned by btcd when replacement transaction was rejected for
+	// whatever reason.
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L841
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L854
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L875
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L896
+	// https://github.com/btcsuite/btcd/blob/130ea5bddde33df32b06a1cdb42a6316eb73cff5/mempool/mempool.go#L913
+	case match(err, "replacement transaction"):
+		returnErr = &ErrReplacement{
+			backendError: err,
+		}
+
+	// Returned by bitcoind when a transaction does not meet the fee
+	// requirements to be accepted into mempool. This happens when the
+	// mempool reached its limits and is now purging low fee transactions.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L510
+	case match(err, "mempool min fee not met"):
+		fallthrough
+
+	// Returned by btcd when a transaction does not meet the fee
+	// requirements to be accepted into mempool.
+	// https://github.com/btcsuite/btcd/blob/9c16d23918b15c468c5647c388b9b7db3bc48dc7/mempool/mempool.go#L1151
+	case match(err, "fees which is under the required amount"):
+		fallthrough
+
+	// Returned by btcd when a transaction does not meet the fee
+	// requirements to be accepted into mempool. The error states priority
+	// but decreasing the min relay fee prevents checking for the priority
+	// in the first place therefore we consider this a mempool fee error.
+	// https://github.com/btcsuite/btcd/blob/9c16d23918b15c468c5647c388b9b7db3bc48dc7/mempool/mempool.go#L1162
+	case match(err, "has insufficient priority"):
+		fallthrough
+
+	// Returned by bitcoind when a transaction does not meet the fee
+	// requirements to be accepted into mempool because the policy of the
+	// mempool has a higher min relay fee. Default value for bitcoind is
+	// 1000 sat/kvbyte but this is configurable.
+	// https://github.com/bitcoin/bitcoin/blob/9bf5768dd628b3a7c30dd42b5ed477a92c4d3540/src/validation.cpp#L514
+	case match(err, "min relay fee not met"):
+		returnErr = &ErrMempoolFee{
+			backendError: err,
+		}
+
+	// We received an error not matching any of the above cases.
+	default:
+		returnErr = fmt.Errorf("unmatched backend error: %v", err)
+	}
+
+	return returnErr
 }

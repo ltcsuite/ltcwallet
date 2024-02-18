@@ -15,14 +15,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/big"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/ripemd160"
+	// consider vendoring this deprecated ripemd160 package
+	"golang.org/x/crypto/ripemd160" // nolint:staticcheck
 
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/ltcsuite/ltcd/btcec/v2"
@@ -64,9 +64,9 @@ var fileID = [8]byte{0xba, 'W', 'A', 'L', 'L', 'E', 'T', 0x00}
 type entryHeader byte
 
 const (
-	addrCommentHeader entryHeader = 1 << iota //nolint:varcheck,deadcode,unused
-	txCommentHeader                           // nolint:varcheck,deadcode,unused
-	deletedHeader                             // nolint:varcheck,deadcode,unused
+	addrCommentHeader entryHeader = 1 << iota // nolint:varcheck,deadcode
+	txCommentHeader                           // nolint:varcheck,deadcode
+	deletedHeader                             // nolint:varcheck,deadcode
 	scriptHeader
 	addrHeader entryHeader = 0
 )
@@ -253,7 +253,6 @@ func chainedPubKey(pubkey, chaincode []byte) ([]byte, error) {
 	newPk := btcec.NewPublicKey(
 		&newPointJacobian.X, &newPointJacobian.Y,
 	)
-
 	if compressed {
 		return newPk.SerializeCompressed(), nil
 	}
@@ -843,7 +842,7 @@ func (s *Store) WriteIfDirty() error {
 	}
 
 	// TempFile creates the file 0600, so no need to chmod it.
-	fi, err := ioutil.TempFile(s.dir, s.file)
+	fi, err := os.CreateTemp(s.dir, s.file)
 	if err != nil {
 		s.mtx.RUnlock()
 		return err

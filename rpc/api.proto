@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package walletrpc;
 
+option go_package = "./;walletrpc";
+
 service VersionService {
 	rpc Version (VersionRequest) returns (VersionResponse);
 }

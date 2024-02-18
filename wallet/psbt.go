@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -22,8 +23,10 @@ import (
 // FundPsbt creates a fully populated PSBT packet that contains enough inputs to
 // fund the outputs specified in the passed in packet with the specified fee
 // rate. If there is change left, a change output from the wallet is added and
-// the index of the change output is returned. Otherwise no additional output
-// is created and the index -1 is returned.
+// the index of the change output is returned. If no custom change scope is
+// specified, we will use the coin selection scope (if not nil) or the BIP0086
+// scope by default. Otherwise, no additional output is created and the
+// index -1 is returned.
 //
 // NOTE: If the packet doesn't contain any inputs, coin selection is performed
 // automatically, only selecting inputs from the account based on the given key
@@ -42,7 +45,8 @@ import (
 // responsibility to lock the inputs before handing the partial transaction out.
 func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 	minConfs int32, account uint32, feeSatPerKB ltcutil.Amount,
-	coinSelectionStrategy CoinSelectionStrategy) (int32, error) {
+	coinSelectionStrategy CoinSelectionStrategy,
+	optFuncs ...TxCreateOption) (int32, error) {
 
 	// Make sure the packet is well formed. We only require there to be at
 	// least one input or output.
@@ -91,22 +95,10 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 					err)
 			}
 
-			// As a fix for CVE-2020-14199 we have to always include
-			// the full non-witness UTXO in the PSBT for segwit v0.
-			packet.Inputs[idx].NonWitnessUtxo = tx
-
-			// To make it more obvious that this is actually a
-			// witness output being spent, we also add the same
-			// information as the witness UTXO.
-			packet.Inputs[idx].WitnessUtxo = &wire.TxOut{
-				Value:    utxo.Value,
-				PkScript: utxo.PkScript,
-			}
-			packet.Inputs[idx].SighashType = txscript.SigHashAll
-
-			// Include the derivation path for each input.
-			packet.Inputs[idx].Bip32Derivation = []*psbt.Bip32Derivation{
-				derivationPath,
+			addr, witnessProgram, _, err := w.ScriptForOutput(utxo)
+			if err != nil {
+				return fmt.Errorf("error fetching UTXO "+
+					"script: %v", err)
 			}
 
 			// We don't want to include the witness or any script
@@ -114,16 +106,18 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 			packet.UnsignedTx.TxIn[idx].Witness = wire.TxWitness{}
 			packet.UnsignedTx.TxIn[idx].SignatureScript = nil
 
-			// For nested P2WKH we need to add the redeem script to
-			// the input, otherwise an offline wallet won't be able
-			// to sign for it. For normal P2WKH this will be nil.
-			addr, witnessProgram, _, err := w.ScriptForOutput(utxo)
-			if err != nil {
-				return fmt.Errorf("error fetching UTXO "+
-					"script: %v", err)
-			}
-			if addr.AddrType() == waddrmgr.NestedWitnessPubKey {
-				packet.Inputs[idx].RedeemScript = witnessProgram
+			switch {
+			case txscript.IsPayToTaproot(utxo.PkScript):
+				addInputInfoSegWitV1(
+					&packet.Inputs[idx], utxo,
+					derivationPath,
+				)
+
+			default:
+				addInputInfoSegWitV0(
+					&packet.Inputs[idx], tx, utxo,
+					derivationPath, addr, witnessProgram,
+				)
 			}
 		}
 
@@ -140,6 +134,7 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		tx, err = w.CreateSimpleTx(
 			keyScope, account, packet.UnsignedTx.TxOut, minConfs,
 			feeSatPerKB, coinSelectionStrategy, false,
+			optFuncs...,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("error creating funding TX: %v",
@@ -185,11 +180,21 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		}
 		inputSource := constantInputSource(credits)
 
+		// Build the TxCreateOption to retrieve the change scope.
+		opts := defaultTxCreateOptions()
+		for _, optFunc := range optFuncs {
+			optFunc(opts)
+		}
+
+		if opts.changeKeyScope == nil {
+			opts.changeKeyScope = keyScope
+		}
+
 		// We also need a change source which needs to be able to insert
 		// a new change address into the database.
 		err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
 			_, changeSource, err := w.addrMgrWithChangeSource(
-				dbtx, keyScope, account,
+				dbtx, opts.changeKeyScope, account,
 			)
 			if err != nil {
 				return err
@@ -221,7 +226,20 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		packet.UnsignedTx.TxOut = append(
 			packet.UnsignedTx.TxOut, changeTxOut,
 		)
-		packet.Outputs = append(packet.Outputs, psbt.POutput{})
+
+		addr, _, _, err := w.ScriptForOutput(changeTxOut)
+		if err != nil {
+			return 0, fmt.Errorf("error querying wallet for "+
+				"change addr: %w", err)
+		}
+
+		changeOutputInfo, err := createOutputInfo(changeTxOut, addr)
+		if err != nil {
+			return 0, fmt.Errorf("error adding output info to "+
+				"change output: %w", err)
+		}
+
+		packet.Outputs = append(packet.Outputs, *changeOutputInfo)
 	}
 
 	// Now that we have the final PSBT ready, we can sort it according to
@@ -247,6 +265,110 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 	return changeIndex, nil
 }
 
+// addInputInfoSegWitV0 adds the UTXO and BIP32 derivation info for a SegWit v0
+// PSBT input (p2wkh, np2wkh) from the given wallet information.
+func addInputInfoSegWitV0(in *psbt.PInput, prevTx *wire.MsgTx, utxo *wire.TxOut,
+	derivationInfo *psbt.Bip32Derivation, addr waddrmgr.ManagedAddress,
+	witnessProgram []byte) {
+
+	// As a fix for CVE-2020-14199 we have to always include the full
+	// non-witness UTXO in the PSBT for segwit v0.
+	in.NonWitnessUtxo = prevTx
+
+	// To make it more obvious that this is actually a witness output being
+	// spent, we also add the same information as the witness UTXO.
+	in.WitnessUtxo = &wire.TxOut{
+		Value:    utxo.Value,
+		PkScript: utxo.PkScript,
+	}
+	in.SighashType = txscript.SigHashAll
+
+	// Include the derivation path for each input.
+	in.Bip32Derivation = []*psbt.Bip32Derivation{
+		derivationInfo,
+	}
+
+	// For nested P2WKH we need to add the redeem script to the input,
+	// otherwise an offline wallet won't be able to sign for it. For normal
+	// P2WKH this will be nil.
+	if addr.AddrType() == waddrmgr.NestedWitnessPubKey {
+		in.RedeemScript = witnessProgram
+	}
+}
+
+// addInputInfoSegWitV0 adds the UTXO and BIP32 derivation info for a SegWit v1
+// PSBT input (p2tr) from the given wallet information.
+func addInputInfoSegWitV1(in *psbt.PInput, utxo *wire.TxOut,
+	derivationInfo *psbt.Bip32Derivation) {
+
+	// For SegWit v1 we only need the witness UTXO information.
+	in.WitnessUtxo = &wire.TxOut{
+		Value:    utxo.Value,
+		PkScript: utxo.PkScript,
+	}
+	in.SighashType = txscript.SigHashDefault
+
+	// Include the derivation path for each input in addition to the
+	// taproot specific info we have below.
+	in.Bip32Derivation = []*psbt.Bip32Derivation{
+		derivationInfo,
+	}
+
+	// Include the derivation path for each input.
+	in.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{{
+		XOnlyPubKey:          derivationInfo.PubKey[1:],
+		MasterKeyFingerprint: derivationInfo.MasterKeyFingerprint,
+		Bip32Path:            derivationInfo.Bip32Path,
+	}}
+}
+
+// createOutputInfo creates the BIP32 derivation info for an output from our
+// internal wallet.
+func createOutputInfo(txOut *wire.TxOut,
+	addr waddrmgr.ManagedPubKeyAddress) (*psbt.POutput, error) {
+
+	// We don't know the derivation path for imported keys. Those shouldn't
+	// be selected as change outputs in the first place, but just to make
+	// sure we don't run into an issue, we return early for imported keys.
+	keyScope, derivationPath, isKnown := addr.DerivationInfo()
+	if !isKnown {
+		return nil, fmt.Errorf("error adding output info to PSBT, " +
+			"change addr is an imported addr with unknown " +
+			"derivation path")
+	}
+
+	// Include the derivation path for this output.
+	derivation := &psbt.Bip32Derivation{
+		PubKey:               addr.PubKey().SerializeCompressed(),
+		MasterKeyFingerprint: derivationPath.MasterKeyFingerprint,
+		Bip32Path: []uint32{
+			keyScope.Purpose + hdkeychain.HardenedKeyStart,
+			keyScope.Coin + hdkeychain.HardenedKeyStart,
+			derivationPath.Account,
+			derivationPath.Branch,
+			derivationPath.Index,
+		},
+	}
+	out := &psbt.POutput{
+		Bip32Derivation: []*psbt.Bip32Derivation{
+			derivation,
+		},
+	}
+
+	// Include the Taproot derivation path as well if this is a P2TR output.
+	if txscript.IsPayToTaproot(txOut.PkScript) {
+		schnorrPubKey := derivation.PubKey[1:]
+		out.TaprootBip32Derivation = []*psbt.TaprootBip32Derivation{{
+			XOnlyPubKey:          schnorrPubKey,
+			MasterKeyFingerprint: derivation.MasterKeyFingerprint,
+			Bip32Path:            derivation.Bip32Path,
+		}}
+		out.TaprootInternalKey = schnorrPubKey
+	}
+
+	return out, nil
+}
+
 // FinalizePsbt expects a partial transaction with all inputs and outputs fully
 // declared and tries to sign all inputs that belong to the wallet. Our wallet
 // must be the last signer of the transaction. That means, if there are any
@@ -261,8 +383,9 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 	packet *psbt.Packet) error {
 
 	// Let's check that this is actually something we can and want to sign.
-	// We need at least one input and one output.
-	err := psbt.VerifyInputOutputLen(packet, true, true)
+	// We need at least one input and one output. In addition each
+	// input needs nonWitness Utxo or witness Utxo data specified.
+	err := psbt.InputsReadyToSign(packet)
 	if err != nil {
 		return err
 	}
@@ -272,7 +395,7 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 	// ones to sign. If there is any input without witness data that we
 	// cannot sign because it's not our UTXO, this will be a hard failure.
 	tx := packet.UnsignedTx
-	sigHashes := txscript.NewTxSigHashes(tx)
+	sigHashes := txscript.NewTxSigHashes(tx, PsbtPrevOutputFetcher(packet))
 	for idx, txIn := range tx.TxIn {
 		in := packet.Inputs[idx]
 
@@ -340,9 +463,9 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 			if keyScope == nil {
 				// If a key scope wasn't specified, then coin
 				// selection was performed from the default
-				// wallet accounts (NP2WKH, P2WKH), so any key
-				// scope provided doesn't impact the result of
-				// this call.
+				// wallet accounts (NP2WKH, P2WKH, P2TR), so any
+				// key scope provided doesn't impact the result
+				// of this call.
 				watchOnly, err = w.Manager.IsWatchOnlyAccount(
 					ns, waddrmgr.KeyScopeBIP0084, account,
 				)
@@ -388,6 +511,39 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 	}
 
 	return nil
+}
+
+// PsbtPrevOutputFetcher returns a txscript.PrevOutFetcher built from the UTXO
+// information in a PSBT packet.
+func PsbtPrevOutputFetcher(packet *psbt.Packet) *txscript.MultiPrevOutFetcher {
+	fetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for idx, txIn := range packet.UnsignedTx.TxIn {
+		in := packet.Inputs[idx]
+
+		// Skip any input that has no UTXO.
+		if in.WitnessUtxo == nil && in.NonWitnessUtxo == nil {
+			continue
+		}
+
+		if in.NonWitnessUtxo != nil {
+			prevIndex := txIn.PreviousOutPoint.Index
+			fetcher.AddPrevOut(
+				txIn.PreviousOutPoint,
+				in.NonWitnessUtxo.TxOut[prevIndex],
+			)
+
+			continue
+		}
+
+		// Fall back to witness UTXO only for older wallets.
+		if in.WitnessUtxo != nil {
+			fetcher.AddPrevOut(
+				txIn.PreviousOutPoint, in.WitnessUtxo,
+			)
+		}
+	}
+
+	return fetcher
 }
 
 // constantInputSource creates an input source function that always returns the

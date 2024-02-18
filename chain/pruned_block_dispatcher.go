@@ -134,7 +134,7 @@ type PrunedBlockDispatcher struct {
 
 	// workManager handles satisfying all of our incoming pruned block
 	// requests.
-	workManager *query.WorkManager
+	workManager query.WorkManager
 
 	// blocksQueried represents the set of pruned blocks we've been
 	// requested to query. Each block maps to a list of clients waiting to
@@ -191,7 +191,7 @@ func NewPrunedBlockDispatcher(cfg *PrunedBlockDispatcherConfig) (
 	peersConnected := make(chan query.Peer)
 	return &PrunedBlockDispatcher{
 		cfg: *cfg,
-		workManager: query.New(&query.Config{
+		workManager: query.NewWorkManager(&query.Config{
 			ConnectedPeers: func() (<-chan query.Peer, func(), error) {
 				return peersConnected, func() {}, nil
 			},
@@ -386,7 +386,7 @@ func (d *PrunedBlockDispatcher) connectToPeer(addr string) (bool, error) {
 // requests, i.e., any peer which is not considered a segwit-enabled
 // "full-node".
 func filterPeers(peers []btcjson.GetPeerInfoResult) ([]string, error) {
-	var eligible []string
+	var eligible []string // nolint:prealloc
 	for _, peer := range peers {
 		rawServices, err := hex.DecodeString(peer.Services)
 		if err != nil {
@@ -405,7 +405,7 @@ func filterPeers(peers []btcjson.GetPeerInfoResult) ([]string, error) {
 // block requests, i.e., any peer which is not considered a segwit-enabled
 // "full-node".
 func filterNodeAddrs(nodeAddrs []btcjson.GetNodeAddressesResult) []string {
-	var eligible []string
+	var eligible []string // nolint:prealloc
 	for _, nodeAddr := range nodeAddrs {
 		services := wire.ServiceFlag(nodeAddr.Services)
 		if !satisfiesRequiredServices(services) {
@@ -543,7 +543,7 @@ func (d *PrunedBlockDispatcher) newRequest(blocks []*chainhash.Hash) (
 
 		if _, ok := d.blocksQueried[*block]; !ok {
 			log.Debugf("Queuing new block %v for request", *block)
-			inv := wire.NewInvVect(wire.InvTypeBlock, block)
+			inv := wire.NewInvVect(wire.InvTypeWitnessBlock, block)
 			if err := getData.AddInvVect(inv); err != nil {
 				return nil, nil, err
 			}
@@ -619,6 +619,20 @@ func (d *PrunedBlockDispatcher) handleResp(req, resp wire.Message,
 		ltcutil.NewBlock(block), d.cfg.ChainParams.PowLimit,
 		d.timeSource,
 	)
+	if err != nil {
+		d.blockMtx.Unlock()
+
+		log.Warnf("Received invalid block %v from peer %v: %v",
+			blockHash, peer, err)
+		d.banPeer(peer)
+
+		return query.Progress{
+			Progressed: false,
+			Finished:   false,
+		}
+	}
+
+	err = blockchain.ValidateWitnessCommitment(ltcutil.NewBlock(block))
 	if err != nil {
 		d.blockMtx.Unlock()
 

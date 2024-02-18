@@ -6,11 +6,8 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
-
-	"golang.org/x/crypto/ssh/terminal"
 
 	"github.com/jessevdk/go-flags"
 	"github.com/ltcsuite/ltcd/btcjson"
@@ -24,6 +21,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
 	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
+	"golang.org/x/term"
 )
 
 var (
@@ -223,7 +221,7 @@ func sweep() error {
 	}
 
 	// Open RPC client.
-	rpcCertificate, err := ioutil.ReadFile(opts.RPCCertificateFile)
+	rpcCertificate, err := os.ReadFile(opts.RPCCertificateFile)
 	if err != nil {
 		return errContext(err, "failed to read RPC certificate")
 	}
@@ -336,7 +334,7 @@ func sweep() error {
 func promptSecret(what string) (string, error) {
 	fmt.Printf("%s: ", what)
 	fd := int(os.Stdin.Fd())
-	input, err := terminal.ReadPassword(fd)
+	input, err := term.ReadPassword(fd)
 	fmt.Println()
 	if err != nil {
 		return "", err

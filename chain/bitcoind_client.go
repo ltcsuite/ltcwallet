@@ -91,13 +91,14 @@ type BitcoindClient struct {
 	// need to process earlier notifications still waiting to be processed.
 	notificationQueue *ConcurrentQueue
 
-	// zmqTxNtfns is a channel through which ZMQ transaction events will be
-	// retrieved from the backing bitcoind connection.
-	zmqTxNtfns chan *wire.MsgTx
+	// txNtfns is a channel through which transaction events will be
+	// retrieved from the backing bitcoind connection, either via ZMQ or
+	// polling RPC.
+	txNtfns chan *wire.MsgTx
 
-	// zmqBlockNtfns is a channel through which ZMQ block events will be
-	// retrieved from the backing bitcoind connection.
-	zmqBlockNtfns chan *wire.MsgBlock
+	// blockNtfns is a channel through block events will be retrieved from
+	// the backing bitcoind connection, either via ZMQ or polling RPC.
+	blockNtfns chan *wire.MsgBlock
 
 	quit chan struct{}
 	wg   sync.WaitGroup
@@ -109,7 +110,7 @@ var _ Interface = (*BitcoindClient)(nil)
 
 // BackEnd returns the name of the driver.
 func (c *BitcoindClient) BackEnd() string {
-	return "bitcoind"
+	return "litecoind"
 }
 
 // GetBestBlock returns the highest block known to bitcoind.
@@ -183,11 +184,23 @@ func (c *BitcoindClient) IsCurrent() bool {
 	return bestHeader.Timestamp.After(time.Now().Add(-isCurrentDelta))
 }
 
-// GetRawTransactionVerbose returns a transaction from the tx hash.
+// GetRawTransactionVerbose returns a TxRawResult from the tx hash.
 func (c *BitcoindClient) GetRawTransactionVerbose(
 	hash *chainhash.Hash) (*btcjson.TxRawResult, error) {
 
 	return c.chainConn.client.GetRawTransactionVerbose(hash)
+}
+
+// GetRawTransaction returns a `ltcutil.Tx` from the tx hash.
+func (c *BitcoindClient) GetRawTransaction(
+	hash *chainhash.Hash) (*ltcutil.Tx, error) {
+
+	return c.chainConn.client.GetRawTransaction(hash)
+}
+
+// GetRawMempool returns the raw mempool.
+func (c *BitcoindClient) GetRawMempool() ([]*chainhash.Hash, error) {
+	return c.chainConn.client.GetRawMempool()
 }
 
 // GetTxOut returns a txout from the outpoint info provided.
@@ -232,10 +245,44 @@ func (c *BitcoindClient) NotifyReceived(addrs []ltcutil.Address) error {
 func (c *BitcoindClient) NotifySpent(outPoints []*wire.OutPoint) error {
 	_ = c.NotifyBlocks()
 
+	// Send the outpoints so the client will cache them.
 	select {
 	case c.rescanUpdate <- outPoints:
 	case <-c.quit:
 		return ErrBitcoindClientShuttingDown
+	}
+
+	// Now we do a quick check in current mempool to see if we already have
+	// txes that spends the given outpoints.
+	for _, op := range outPoints {
+		op := op
+
+		// Check if the input is seen in mempool.
+		txid, found := c.chainConn.events.LookupInputSpend(*op)
+		if !found {
+			// Nothing found, continue to check the next.
+			continue
+		}
+
+		// Found the tx that spends the input, now we fetch the raw tx
+		// and send notification.
+		tx, err := c.GetRawTransaction(&txid)
+		if err != nil {
+			log.Errorf("Unable to get raw transaction for %v, "+
+				"err: %v", txid, err)
+			continue
+		}
+
+		// Construct a record.
+		rec, err := wtxmgr.NewTxRecordFromMsgTx(tx.MsgTx(), time.Now())
+		if err != nil {
+			log.Errorf("Cannot create transaction record for tx: "+
+				"%v, err: %v", tx.Hash(), err)
+			continue
+		}
+
+		// Send to notification immediately.
+		c.onRelevantTx(rec, nil)
 	}
 
 	return nil
@@ -310,6 +357,7 @@ func (c *BitcoindClient) shouldNotifyBlocks() bool {
 // is used to reset the current filters.
 //
 // The current filters supported are of the following types:
+//
 //	[]ltcutil.Address
 //	[]wire.OutPoint
 //	[]*wire.OutPoint
@@ -597,12 +645,15 @@ func (c *BitcoindClient) ntfnHandler() {
 
 	for {
 		select {
-		case tx := <-c.zmqTxNtfns:
-			if _, _, err := c.filterTx(tx, nil, true); err != nil {
+		case tx := <-c.txNtfns:
+			txDetails := ltcutil.NewTx(tx)
+			_, _, err := c.filterTx(txDetails, nil, true)
+			if err != nil {
 				log.Errorf("Unable to filter transaction %v: %v",
-					tx.TxHash(), err)
+					txDetails.Hash(), err)
 			}
-		case newBlock := <-c.zmqBlockNtfns:
+
+		case newBlock := <-c.blockNtfns:
 			// If the new block's previous hash matches the best
 			// hash known to us, then the new block is the next
 			// successor, so we'll update our best block to reflect
@@ -752,7 +803,7 @@ func (c *BitcoindClient) onRescanProgress(hash *chainhash.Hash, height int32,
 
 	select {
 	case c.notificationQueue.ChanIn() <- &RescanProgress{
-		Hash:   hash,
+		Hash:   *hash,
 		Height: height,
 		Time:   timestamp,
 	}:
@@ -1182,16 +1233,19 @@ func (c *BitcoindClient) filterBlock(block *wire.MsgBlock, height int32,
 		// Update the index in the block details with the index of this
 		// transaction.
 		blockDetails.Index = i
-		isRelevant, rec, err := c.filterTx(tx, blockDetails, notify)
+		txDetails := ltcutil.NewTx(tx)
+		isRelevant, rec, err := c.filterTx(
+			txDetails, blockDetails, notify,
+		)
 		if err != nil {
 			log.Warnf("Unable to filter transaction %v: %v",
-				tx.TxHash(), err)
+				*txDetails.Hash(), err)
 			continue
 		}
 
 		if isRelevant {
 			relevantTxs = append(relevantTxs, rec)
-			confirmedTxs[tx.TxHash()] = struct{}{}
+			confirmedTxs[*txDetails.Hash()] = struct{}{}
 		}
 	}
 
@@ -1218,11 +1272,10 @@ func (c *BitcoindClient) filterBlock(block *wire.MsgBlock, height int32,
 
 // filterTx determines whether a transaction is relevant to the client by
 // inspecting the client's different filters.
-func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
-	blockDetails *btcjson.BlockDetails,
-	notify bool) (bool, *wtxmgr.TxRecord, error) {
+func (c *BitcoindClient) filterTx(txDetails *ltcutil.Tx,
+	blockDetails *btcjson.BlockDetails, notify bool) (bool,
+	*wtxmgr.TxRecord, error) {
 
-	txDetails := ltcutil.NewTx(tx)
 	if blockDetails != nil {
 		txDetails.SetIndex(blockDetails.Index)
 	}
@@ -1245,11 +1298,11 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 	// If we've already seen this transaction and it's now been confirmed,
 	// then we'll shortcut the filter process by immediately sending a
 	// notification to the caller that the filter matches.
-	if _, ok := c.mempool[tx.TxHash()]; ok {
+	if _, ok := c.mempool[*txDetails.Hash()]; ok {
 		if notify && blockDetails != nil {
 			c.onRelevantTx(rec, blockDetails)
+			return true, rec, nil
 		}
-		return true, rec, nil
 	}
 
 	// Otherwise, this is a new transaction we have yet to see. We'll need
@@ -1259,7 +1312,7 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 	// We'll start by checking all inputs and determining whether it spends
 	// an existing outpoint or a pkScript encoded as an address in our watch
 	// list.
-	for _, txIn := range tx.TxIn {
+	for _, txIn := range txDetails.MsgTx().TxIn {
 		// If it matches an outpoint in our watch list, we can exit our
 		// loop early.
 		if _, ok := c.watchedOutPoints[txIn.PreviousOutPoint]; ok {
@@ -1291,7 +1344,7 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 	// We'll also cycle through its outputs to determine if it pays to
 	// any of the currently watched addresses. If an output matches, we'll
 	// add it to our watch list.
-	for i, txOut := range tx.TxOut {
+	for i, txOut := range txDetails.MsgTx().TxOut {
 		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
 			txOut.PkScript, c.chainConn.cfg.ChainParams,
 		)
@@ -1304,7 +1357,7 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 			if _, ok := c.watchedAddresses[addr.String()]; ok {
 				isRelevant = true
 				op := wire.OutPoint{
-					Hash:  tx.TxHash(),
+					Hash:  *txDetails.Hash(),
 					Index: uint32(i),
 				}
 				c.watchedOutPoints[op] = struct{}{}
@@ -1315,7 +1368,7 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 	// If the transaction didn't pay to any of our watched addresses, we'll
 	// check if we're currently watching for the hash of this transaction.
 	if !isRelevant {
-		if _, ok := c.watchedTxs[tx.TxHash()]; ok {
+		if _, ok := c.watchedTxs[*txDetails.Hash()]; ok {
 			isRelevant = true
 		}
 	}
@@ -1330,7 +1383,7 @@ func (c *BitcoindClient) filterTx(tx *wire.MsgTx,
 	// our mempool so that it can also be notified as part of
 	// FilteredBlockConnected once it confirms.
 	if blockDetails == nil {
-		c.mempool[tx.TxHash()] = struct{}{}
+		c.mempool[*txDetails.Hash()] = struct{}{}
 	}
 
 	c.onRelevantTx(rec, blockDetails)

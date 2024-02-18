@@ -6,7 +6,6 @@ package wallet
 
 import (
 	"bytes"
-	"fmt"
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -84,6 +83,42 @@ func (w *Wallet) handleChainNotifications() {
 		return err
 	}
 
+	waitForSync := func(birthdayBlock *waddrmgr.BlockStamp) error {
+		// We start with a retry delay of 0 to execute the first attempt
+		// immediately.
+		var retryDelay time.Duration
+		for {
+			select {
+			case <-time.After(retryDelay):
+				// Set the delay to the configured value in case
+				// we actually need to re-try.
+				retryDelay = w.syncRetryInterval
+
+				// Sync may be interrupted by actions such as
+				// locking the wallet. Try again after waiting a
+				// bit.
+				err = w.syncWithChain(birthdayBlock)
+				if err != nil {
+					if w.ShuttingDown() {
+						return ErrWalletShuttingDown
+					}
+
+					log.Errorf("Unable to synchronize "+
+						"wallet to chain, trying "+
+						"again in %s: %v",
+						w.syncRetryInterval, err)
+
+					continue
+				}
+
+				return nil
+
+			case <-w.quitChan():
+				return ErrWalletShuttingDown
+			}
+		}
+	}
+
 	for {
 		select {
 		case n, ok := <-chainClient.Notifications():
@@ -106,17 +141,23 @@ func (w *Wallet) handleChainNotifications() {
 				birthdayBlock, err := birthdaySanityCheck(
 					chainClient, birthdayStore,
 				)
-				if err != nil && !waddrmgr.IsError(err, waddrmgr.ErrBirthdayBlockNotSet) {
-					panic(fmt.Errorf("unable to sanity "+
-						"check wallet birthday block: %v",
-						err))
+				if err != nil && !waddrmgr.IsError(
+					err, waddrmgr.ErrBirthdayBlockNotSet,
+				) {
+
+					log.Errorf("Unable to sanity check "+
+						"wallet birthday block: %v",
+						err)
 				}
 
-				err = w.syncWithChain(birthdayBlock)
-				if err != nil && !w.ShuttingDown() {
-					panic(fmt.Errorf("unable to synchronize "+
-						"wallet to chain: %v", err))
+				err = waitForSync(birthdayBlock)
+				if err != nil {
+					log.Infof("Stopped waiting for wallet "+
+						"sync due to error: %v", err)
+
+					return
 				}
+
 			case chain.BlockConnected:
 				err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
 					return w.connectBlock(tx, wtxmgr.BlockMeta(n))
@@ -272,7 +313,9 @@ func (w *Wallet) disconnectBlock(dbtx walletdb.ReadWriteTx, b wtxmgr.BlockMeta) 
 	return nil
 }
 
-func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord, block *wtxmgr.BlockMeta) error {
+func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
+	block *wtxmgr.BlockMeta) error {
+
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
@@ -304,28 +347,46 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord, 
 		}
 		for _, addr := range addrs {
 			ma, err := w.Manager.Address(addrmgrNs, addr)
-			if err == nil {
-				// TODO: Credits should be added with the
-				// account they belong to, so wtxmgr is able to
-				// track per-account balances.
-				err = w.TxStore.AddCredit(txmgrNs, rec, block, uint32(i),
-					ma.Internal())
-				if err != nil {
-					return err
-				}
-				err = w.Manager.MarkUsed(addrmgrNs, addr)
-				if err != nil {
-					return err
-				}
-				log.Debugf("Marked address %v used", addr)
+
+			switch {
+			// Missing addresses are skipped.
+			case waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound):
+				continue
+
+			// Other errors should be propagated.
+			case err != nil:
+				return err
+			}
+
+			// Prevent addresses from non-default scopes to be
+			// detected here. We don't watch funds sent to
+			// non-default scopes in other places either, so
+			// detecting them here would mean we'd also not properly
+			// detect them as spent later.
+			scopedManager, _, err := w.Manager.AddrAccount(
+				addrmgrNs, addr,
+			)
+			if err != nil {
+				return err
+			}
+			if !waddrmgr.IsDefaultScope(scopedManager.Scope()) {
 				continue
 			}
 
-			// Missing addresses are skipped.  Other errors should
-			// be propagated.
-			if !waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound) {
+			// TODO: Credits should be added with the
+			// account they belong to, so wtxmgr is able to
+			// track per-account balances.
+			err = w.TxStore.AddCredit(
+				txmgrNs, rec, block, uint32(i), ma.Internal(),
+			)
+			if err != nil {
 				return err
 			}
+			err = w.Manager.MarkUsed(addrmgrNs, addr)
+			if err != nil {
+				return err
+			}
+			log.Debugf("Marked address %v used", addr)
 		}
 	}
 

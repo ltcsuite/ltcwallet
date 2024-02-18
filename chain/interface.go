@@ -5,6 +5,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
@@ -22,6 +23,7 @@ func BackEnds() []string {
 		"litecoind",
 		"ltcd",
 		"neutrino",
+		"litecoind-rpc-polling",
 	}
 }
 
@@ -109,7 +111,7 @@ type (
 	// RescanProgress is a notification describing the current status
 	// of an in-progress rescan.
 	RescanProgress struct {
-		Hash   *chainhash.Hash
+		Hash   chainhash.Hash
 		Height int32
 		Time   time.Time
 	}
@@ -122,3 +124,36 @@ type (
 		Time   time.Time
 	}
 )
+
+// batchClient defines an interface that is used to interact with the RPC
+// client.
+//
+// NOTE: the client returned from `rpcclient.NewBatch` will implement this
+// interface. Unlike the client from `rpcclient.New`, calling `GetRawMempool`
+// on this client will block and won't return.
+//
+// TODO(yy): create a new type BatchClient in `rpcclient`.
+type batchClient interface {
+	// GetRawMempoolAsync returns an instance of a type that can be used to
+	// get the result of the RPC at some future time by invoking the
+	// Receive function on the returned instance.
+	GetRawMempoolAsync() rpcclient.FutureGetRawMempoolResult
+
+	// GetRawTransactionAsync returns an instance of a type that can be
+	// used to get the result of the RPC at some future time by invoking
+	// the Receive function on the returned instance.
+	GetRawTransactionAsync(
+		txHash *chainhash.Hash) rpcclient.FutureGetRawTransactionResult
+
+	// Send marshalls bulk requests and sends to the server creates a
+	// response channel to receive the response
+	Send() error
+}
+
+// getRawTxReceiver defines an interface that's used to receive response from
+// `GetRawTransactionAsync`.
+type getRawTxReceiver interface {
+	// Receive waits for the Response promised by the future and returns a
+	// transaction given its hash.
+	Receive() (*ltcutil.Tx, error)
+}

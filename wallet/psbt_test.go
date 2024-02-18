@@ -7,8 +7,11 @@ package wallet
 import (
 	"bytes"
 	"encoding/hex"
-	"strings"
 	"testing"
+
+	"github.com/ltcsuite/ltcwallet/wallet/txrules"
+	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
+	"github.com/stretchr/testify/require"
 
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
@@ -29,33 +32,28 @@ var (
 
 // TestFundPsbt tests that a given PSBT packet is funded correctly.
 func TestFundPsbt(t *testing.T) {
+	t.Parallel()
+
 	w, cleanup := testWallet(t)
 	defer cleanup()
 
 	// Create a P2WKH address we can use to send some coins to.
 	addr, err := w.CurrentAddress(0, waddrmgr.KeyScopeBIP0084)
-	if err != nil {
-		t.Fatalf("unable to get current address: %v", addr)
-	}
+	require.NoError(t, err)
 	p2wkhAddr, err := txscript.PayToAddrScript(addr)
-	if err != nil {
-		t.Fatalf("unable to convert wallet address to p2wkh: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Also create a nested P2WKH address we can use to send some coins to.
 	addr, err = w.CurrentAddress(0, waddrmgr.KeyScopeBIP0049Plus)
-	if err != nil {
-		t.Fatalf("unable to get current address: %v", addr)
-	}
+	require.NoError(t, err)
 	np2wkhAddr, err := txscript.PayToAddrScript(addr)
-	if err != nil {
-		t.Fatalf("unable to convert wallet address to np2wkh: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Register two big UTXO that will be used when funding the PSBT.
+	const utxo1Amount = 1000000
 	incomingTx1 := &wire.MsgTx{
 		TxIn:  []*wire.TxIn{{}},
-		TxOut: []*wire.TxOut{wire.NewTxOut(1000000, p2wkhAddr)},
+		TxOut: []*wire.TxOut{wire.NewTxOut(utxo1Amount, p2wkhAddr)},
 	}
 	addUtxo(t, w, incomingTx1)
 	utxo1 := wire.OutPoint{
@@ -63,9 +61,10 @@ func TestFundPsbt(t *testing.T) {
 		Index: 0,
 	}
 
+	const utxo2Amount = 900000
 	incomingTx2 := &wire.MsgTx{
 		TxIn:  []*wire.TxIn{{}},
-		TxOut: []*wire.TxOut{wire.NewTxOut(900000, np2wkhAddr)},
+		TxOut: []*wire.TxOut{wire.NewTxOut(utxo2Amount, np2wkhAddr)},
 	}
 	addUtxo(t, w, incomingTx2)
 	utxo2 := wire.OutPoint{
@@ -74,22 +73,23 @@ func TestFundPsbt(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name             string
-		packet           *psbt.Packet
-		feeRateSatPerKB  ltcutil.Amount
-		expectedErr      string
-		validatePackage  bool
-		expectedFee      int64
-		expectedChange   int64
-		expectedInputs   []wire.OutPoint
-		additionalChecks func(*testing.T, *psbt.Packet, int32)
+		name                    string
+		packet                  *psbt.Packet
+		feeRateSatPerKB         ltcutil.Amount
+		changeKeyScope          *waddrmgr.KeyScope
+		expectedErr             string
+		validatePackage         bool
+		expectedChangeBeforeFee int64
+		expectedInputs          []wire.OutPoint
+		additionalChecks        func(*testing.T, *psbt.Packet, int32)
 	}{{
 		name: "no outputs provided",
 		packet: &psbt.Packet{
 			UnsignedTx: &wire.MsgTx{},
 		},
 		feeRateSatPerKB: 0,
-		expectedErr:     "PSBT packet must contain at least one input or output",
+		expectedErr: "PSBT packet must contain at least one " +
+			"input or output",
 	}, {
 		name: "single input, no outputs",
 		packet: &psbt.Packet{
@@ -100,11 +100,10 @@ func TestFundPsbt(t *testing.T) {
 			},
 			Inputs: []psbt.PInput{{}},
 		},
-		feeRateSatPerKB: 20000,
-		validatePackage: true,
-		expectedInputs:  []wire.OutPoint{utxo1},
-		expectedFee:     2200,
-		expectedChange:  997800,
+		feeRateSatPerKB:         20000,
+		validatePackage:         true,
+		expectedInputs:          []wire.OutPoint{utxo1},
+		expectedChangeBeforeFee: utxo1Amount,
 	}, {
 		name: "no dust outputs",
 		packet: &psbt.Packet{
@@ -132,12 +131,11 @@ func TestFundPsbt(t *testing.T) {
 			},
 			Outputs: []psbt.POutput{{}, {}},
 		},
-		feeRateSatPerKB: 2000, // 2 sat/byte
-		expectedErr:     "",
-		validatePackage: true,
-		expectedFee:     368,
-		expectedChange:  1000000 - 150000 - 368,
-		expectedInputs:  []wire.OutPoint{utxo1},
+		feeRateSatPerKB:         2000, // 2 sat/byte
+		expectedErr:             "",
+		validatePackage:         true,
+		expectedChangeBeforeFee: utxo1Amount - 150000,
+		expectedInputs:          []wire.OutPoint{utxo1},
 	}, {
 		name: "large output, no inputs",
 		packet: &psbt.Packet{
@@ -149,12 +147,11 @@ func TestFundPsbt(t *testing.T) {
 			},
 			Outputs: []psbt.POutput{{}},
 		},
-		feeRateSatPerKB: 4000, // 4 sat/byte
-		expectedErr:     "",
-		validatePackage: true,
-		expectedFee:     980,
-		expectedChange:  1900000 - 1500000 - 980,
-		expectedInputs:  []wire.OutPoint{utxo1, utxo2},
+		feeRateSatPerKB:         4000, // 4 sat/byte
+		expectedErr:             "",
+		validatePackage:         true,
+		expectedChangeBeforeFee: (utxo1Amount + utxo2Amount) - 1500000,
+		expectedInputs:          []wire.OutPoint{utxo1, utxo2},
 	}, {
 		name: "two outputs, two inputs",
 		packet: &psbt.Packet{
@@ -175,21 +172,18 @@ func TestFundPsbt(t *testing.T) {
 			Inputs:  []psbt.PInput{{}, {}},
 			Outputs: []psbt.POutput{{}, {}},
 		},
-		feeRateSatPerKB: 2000, // 2 sat/byte
-		expectedErr:     "",
-		validatePackage: true,
-		expectedFee:     552,
-		expectedChange:  1900000 - 150000 - 552,
-		expectedInputs:  []wire.OutPoint{utxo1, utxo2},
+		feeRateSatPerKB:         2000, // 2 sat/byte
+		expectedErr:             "",
+		validatePackage:         true,
+		expectedChangeBeforeFee: (utxo1Amount + utxo2Amount) - 150000,
+		expectedInputs:          []wire.OutPoint{utxo1, utxo2},
 		additionalChecks: func(t *testing.T, packet *psbt.Packet,
 			changeIndex int32) {
 
 			// Check outputs, find index for each of the 3 expected.
 			txOuts := packet.UnsignedTx.TxOut
-			if len(txOuts) != 3 {
-				t.Fatalf("unexpected outputs, got %d wanted 3",
-					len(txOuts))
-			}
+			require.Len(t, txOuts, 3, "tx outputs")
+
 			p2wkhIndex := -1
 			p2wshIndex := -1
 			totalOut := int64(0)
@@ -212,30 +206,83 @@ func TestFundPsbt(t *testing.T) {
 			}
 
 			// All outputs must be found.
-			if p2wkhIndex < 0 || p2wshIndex < 0 || changeIndex < 0 {
-				t.Fatalf("not all outputs found, got indices "+
-					"p2wkh=%d, p2wsh=%d, change=%d",
-					p2wkhIndex, p2wshIndex, changeIndex)
-			}
+			require.Greater(t, p2wkhIndex, -1)
+			require.Greater(t, p2wshIndex, -1)
+			require.Greater(t, changeIndex, int32(-1))
 
 			// After BIP 69 sorting, the P2WKH output should be
 			// before the P2WSH output because the PK script is
 			// lexicographically smaller.
-			if p2wkhIndex > p2wshIndex {
-				t.Fatalf("expected output with script %x to "+
-					"be before script %x",
-					txOuts[p2wkhIndex].PkScript,
-					txOuts[p2wshIndex].PkScript)
-			}
+			require.Less(
+				t, p2wkhIndex, p2wshIndex,
+				"index after sorting",
+			)
 		},
+	}, {
+		name: "one input and a custom change scope: BIP0084",
+		packet: &psbt.Packet{
+			UnsignedTx: &wire.MsgTx{
+				TxIn: []*wire.TxIn{{
+					PreviousOutPoint: utxo1,
+				}},
+			},
+			Inputs: []psbt.PInput{{}},
+		},
+		feeRateSatPerKB:         20000,
+		validatePackage:         true,
+		changeKeyScope:          &waddrmgr.KeyScopeBIP0084,
+		expectedInputs:          []wire.OutPoint{utxo1},
+		expectedChangeBeforeFee: utxo1Amount,
+	}, {
+		name: "no inputs and a custom change scope: BIP0084",
+		packet: &psbt.Packet{
+			UnsignedTx: &wire.MsgTx{
+				TxOut: []*wire.TxOut{{
+					PkScript: testScriptP2WSH,
+					Value:    100000,
+				}, {
+					PkScript: testScriptP2WKH,
+					Value:    50000,
+				}},
+			},
+			Outputs: []psbt.POutput{{}, {}},
+		},
+		feeRateSatPerKB:         2000, // 2 sat/byte
+		expectedErr:             "",
+		validatePackage:         true,
+		changeKeyScope:          &waddrmgr.KeyScopeBIP0084,
+		expectedChangeBeforeFee: utxo1Amount - 150000,
+		expectedInputs:          []wire.OutPoint{utxo1},
 	}}
+
+	calcFee := func(feeRateSatPerKB ltcutil.Amount,
+		packet *psbt.Packet) ltcutil.Amount {
+
+		var numP2WKHInputs, numNP2WKHInputs int
+		for _, txin := range packet.UnsignedTx.TxIn {
+			if txin.PreviousOutPoint == utxo1 {
+				numP2WKHInputs++
+			}
+			if txin.PreviousOutPoint == utxo2 {
+				numNP2WKHInputs++
+			}
+		}
+		estimatedSize := txsizes.EstimateVirtualSize(
+			0, 0, numP2WKHInputs, numNP2WKHInputs,
+			packet.UnsignedTx.TxOut, 0,
+		)
+		return txrules.FeeForSerializeSize(
+			feeRateSatPerKB, estimatedSize,
+		)
+	}
 
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			changeIndex, err := w.FundPsbt(
-				tc.packet, nil, 1, 0, tc.feeRateSatPerKB,
-				CoinSelectionLargest,
+				tc.packet, nil, 1, 0,
+				tc.feeRateSatPerKB, CoinSelectionLargest,
+				WithCustomChangeScope(tc.changeKeyScope),
 			)
 
 			// In any case, unlock the UTXO before continuing, we
@@ -245,19 +292,12 @@ func TestFundPsbt(t *testing.T) {
 			}
 
 			// Make sure the error is what we expected.
-			if err == nil && tc.expectedErr != "" {
-				t.Fatalf("expected error '%s' but got nil",
-					tc.expectedErr)
+			if tc.expectedErr != "" {
+				require.ErrorContains(t, err, tc.expectedErr)
+				return
 			}
-			if err != nil && tc.expectedErr == "" {
-				t.Fatalf("expected nil error but got '%v'", err)
-			}
-			if err != nil &&
-				!strings.Contains(err.Error(), tc.expectedErr) {
 
-				t.Fatalf("expected error '%s' but got '%v'",
-					tc.expectedErr, err)
-			}
+			require.NoError(t, err)
 
 			if !tc.validatePackage {
 				return
@@ -283,15 +323,54 @@ func TestFundPsbt(t *testing.T) {
 				totalIn += txIn.WitnessUtxo.Value
 			}
 			fee := totalIn - totalOut
-			if fee != tc.expectedFee {
-				t.Fatalf("unexpected fee, got %d wanted %d",
-					fee, tc.expectedFee)
-			}
-			if txOuts[changeIndex].Value != tc.expectedChange {
-				t.Fatalf("unexpected change output size, got "+
-					"%d wanted %d",
-					txOuts[changeIndex].Value,
-					tc.expectedChange)
+
+			expectedFee := calcFee(tc.feeRateSatPerKB, packet)
+			require.EqualValues(t, expectedFee, fee, "fee")
+			require.EqualValues(
+				t, tc.expectedChangeBeforeFee,
+				txOuts[changeIndex].Value+int64(expectedFee),
+			)
+
+			changeTxOut := txOuts[changeIndex]
+			changeOutput := packet.Outputs[changeIndex]
+
+			require.NotEmpty(t, changeOutput.Bip32Derivation)
+			b32d := changeOutput.Bip32Derivation[0]
+			require.Len(t, b32d.Bip32Path, 5, "derivation path len")
+			require.Len(t, b32d.PubKey, 33, "pubkey len")
+
+			// The third item should be the branch and should belong
+			// to a change output.
+			require.EqualValues(t, 1, b32d.Bip32Path[3])
+
+			assertChangeOutputScope(
+				t, changeTxOut.PkScript, tc.changeKeyScope,
+			)
+
+			if txscript.IsPayToTaproot(changeTxOut.PkScript) {
+				require.NotEmpty(
+					t, changeOutput.TaprootInternalKey,
+				)
+				require.Len(
+					t, changeOutput.TaprootInternalKey, 32,
+					"internal key len",
+				)
+				require.NotEmpty(
+					t, changeOutput.TaprootBip32Derivation,
+				)
+
+				trb32d := changeOutput.TaprootBip32Derivation[0]
+				require.Equal(
+					t, b32d.Bip32Path, trb32d.Bip32Path,
+				)
+				require.Len(
+					t, trb32d.XOnlyPubKey, 32,
+					"schnorr pubkey len",
+				)
+				require.Equal(
+					t, changeOutput.TaprootInternalKey,
+					trb32d.XOnlyPubKey,
+				)
 			}
 		})
 	}
@@ -300,10 +379,7 @@ func TestFundPsbt(t *testing.T) {
 func assertTxInputs(t *testing.T, packet *psbt.Packet,
 	expected []wire.OutPoint) {
 
-	if len(packet.UnsignedTx.TxIn) != len(expected) {
-		t.Fatalf("expected %d inputs to be added, got %d",
-			len(expected), len(packet.UnsignedTx.TxIn))
-	}
+	require.Len(t, packet.UnsignedTx.TxIn, len(expected))
 
 	// The order of the UTXOs is random, we need to loop through each of
 	// them to make sure they're found. We also check that no signature data
@@ -314,16 +390,30 @@ func assertTxInputs(t *testing.T, packet *psbt.Packet,
 				"UTXOs", txIn.PreviousOutPoint)
 		}
 
-		if len(txIn.SignatureScript) > 0 {
-			t.Fatalf("expected scriptSig to be empty on "+
-				"txin, got %x instead",
-				txIn.SignatureScript)
-		}
-		if len(txIn.Witness) > 0 {
-			t.Fatalf("expected witness to be empty on "+
-				"txin, got %v instead",
-				txIn.Witness)
-		}
+		require.Empty(t, txIn.SignatureScript)
+		require.Empty(t, txIn.Witness)
+	}
+}
+
+// assertChangeOutputScope checks if the pkScript has the right type.
+func assertChangeOutputScope(t *testing.T, pkScript []byte,
+	changeScope *waddrmgr.KeyScope) {
+
+	// By default (changeScope == nil), the script should
+	// be a pay-to-taproot one.
+	switch changeScope {
+	case nil, &waddrmgr.KeyScopeBIP0086:
+		require.True(t, txscript.IsPayToTaproot(pkScript))
+
+	case &waddrmgr.KeyScopeBIP0049Plus, &waddrmgr.KeyScopeBIP0084:
+		require.True(t, txscript.IsPayToWitnessPubKeyHash(pkScript))
+
+	case &waddrmgr.KeyScopeBIP0044:
+		require.True(t, txscript.IsPayToPubKeyHash(pkScript))
+
+	default:
+		require.Fail(t, "assertChangeOutputScope error",
+			"change scope: %s", changeScope.String())
 	}
 }
 
@@ -339,6 +429,8 @@ func containsUtxo(list []wire.OutPoint, candidate wire.OutPoint) bool {
 
 // TestFinalizePsbt tests that a given PSBT packet can be finalized.
 func TestFinalizePsbt(t *testing.T) {
+	t.Parallel()
+
 	w, cleanup := testWallet(t)
 	defer cleanup()
 
