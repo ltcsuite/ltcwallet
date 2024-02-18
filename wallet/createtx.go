@@ -149,7 +149,6 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			}
 		}
 
-		changeKeyScope := keyScope
 		if !allCanonical {
 			changeKeyScope = &waddrmgr.KeyScopeMweb
 		}
