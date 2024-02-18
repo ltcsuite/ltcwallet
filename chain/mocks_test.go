@@ -146,15 +146,12 @@ func (m *mockChainService) NetTotals() (uint64, uint64) {
 }
 
 func (m *mockChainService) RegisterMempoolCallback(func(*ltcutil.Tx, *btcjson.BlockDetails)) {
-	panic(errNotImplemented)
 }
 
 func (m *mockChainService) NotifyMempoolReceived([]ltcutil.Address) {
-	panic(errNotImplemented)
 }
 
 func (m *mockChainService) RegisterMwebUtxosCallback(func([]byte, []*wire.MwebNetUtxo)) {
-	panic(errNotImplemented)
 }
 
 func (m *mockChainService) NotifyAddedMwebUtxos([]byte) error {
