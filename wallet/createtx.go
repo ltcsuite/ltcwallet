@@ -271,7 +271,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			// (NP2WKH, P2WKH, P2TR), so any key scope provided
 			// doesn't impact the result of this call.
 			watchOnly, err = w.Manager.IsWatchOnlyAccount(
-				addrmgrNs, waddrmgr.KeyScopeBIP0086, account,
+				addrmgrNs, waddrmgr.KeyScopeBIP0084, account,
 			)
 		} else {
 			watchOnly, err = w.Manager.IsWatchOnlyAccount(
@@ -421,7 +421,7 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 	// Determine the address type for change addresses of the given
 	// account.
 	if changeKeyScope == nil {
-		changeKeyScope = &waddrmgr.KeyScopeBIP0086
+		changeKeyScope = &waddrmgr.KeyScopeBIP0084
 	}
 	addrType := waddrmgr.ScopeAddrMap[*changeKeyScope].InternalAddrType
 
