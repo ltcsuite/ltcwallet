@@ -748,7 +748,7 @@ func (w *Wallet) recovery(chainClient chain.Interface,
 	var blocks []*waddrmgr.BlockStamp
 	startHeight := w.Manager.SyncedTo().Height + 1
 	for height := startHeight; height <= bestHeight; height++ {
-		if atomic.LoadUint32(&syncer.quit) == 1 {
+		if atomic.LoadUint32(&syncer.quit) == 1 || w.ShuttingDown() {
 			return errors.New("recovery: forced shutdown")
 		}
 
