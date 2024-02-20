@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
@@ -503,6 +502,8 @@ func (s *NeutrinoClient) NotifyReceived(addrs []ltcutil.Address) error {
 
 	s.clientMtx.Lock()
 
+	s.CS.NotifyMempoolReceived(addrs)
+
 	// If we have a rescan running, we just need to add the appropriate
 	// addresses to the watch list.
 	if s.scanning {
@@ -806,7 +807,7 @@ out:
 	s.wg.Done()
 }
 
-func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx, block *btcjson.BlockDetails) {
+func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx) {
 	rec, err := wtxmgr.NewTxRecordFromMsgTx(tx.MsgTx(), time.Now())
 	if err != nil {
 		log.Errorf("Cannot create transaction record for relevant "+

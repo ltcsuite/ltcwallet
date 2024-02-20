@@ -4,7 +4,6 @@ import (
 	"container/list"
 	"errors"
 
-	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
@@ -145,7 +144,7 @@ func (m *mockChainService) NetTotals() (uint64, uint64) {
 	panic(errNotImplemented)
 }
 
-func (m *mockChainService) RegisterMempoolCallback(func(*ltcutil.Tx, *btcjson.BlockDetails)) {
+func (m *mockChainService) RegisterMempoolCallback(func(*ltcutil.Tx)) {
 }
 
 func (m *mockChainService) NotifyMempoolReceived([]ltcutil.Address) {

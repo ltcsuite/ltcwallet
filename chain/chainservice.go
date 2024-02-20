@@ -1,7 +1,6 @@
 package chain
 
 import (
-	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
@@ -33,7 +32,7 @@ type NeutrinoChainService interface {
 	AddBytesSent(uint64)
 	AddBytesReceived(uint64)
 	NetTotals() (uint64, uint64)
-	RegisterMempoolCallback(func(*ltcutil.Tx, *btcjson.BlockDetails))
+	RegisterMempoolCallback(func(*ltcutil.Tx))
 	NotifyMempoolReceived([]ltcutil.Address)
 	RegisterMwebUtxosCallback(func([]byte, []*wire.MwebNetUtxo))
 	NotifyAddedMwebUtxos([]byte) error
