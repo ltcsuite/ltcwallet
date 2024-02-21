@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"math"
 	"math/big"
 	"time"
 
@@ -519,7 +518,7 @@ func (w *Wallet) extractCanonicalFromMweb(
 	kernels := rec.MsgTx.Mweb.TxBody.Kernels
 	if len(kernels) > 0 {
 		// Check for sentinel kernel
-		if kernels[len(kernels)-1].Fee == math.MaxUint64 {
+		if kernels[len(kernels)-1].Excess[0] == 0 {
 			return nil
 		}
 	}
@@ -562,8 +561,7 @@ func (w *Wallet) extractCanonicalFromMweb(
 	}
 
 	// Add a sentinel kernel so that we don't process this tx again.
-	rec.MsgTx.Mweb.TxBody.Kernels = append(kernels, &wire.MwebKernel{
-		Features: wire.MwebKernelFeeFeatureBit, Fee: math.MaxUint64})
+	rec.MsgTx.Mweb.TxBody.Kernels = append(kernels, &wire.MwebKernel{})
 
 	rec.SerializedTx = nil
 
