@@ -643,11 +643,17 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 				Hash:     *utxo.OutputId,
 				Received: block.Time,
 			}
+			if utxo.Height == 0 {
+				rec.Received = time.Now()
+				block = nil
+			}
 			err = w.addRelevantTx(dbtx, rec, block)
 			if err != nil {
 				return err
 			}
-			w.NtfnServer.notifyAttachedBlock(dbtx, block)
+			if block != nil {
+				w.NtfnServer.notifyAttachedBlock(dbtx, block)
+			}
 		}
 		return nil
 	})
@@ -703,7 +709,7 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) 
 
 	var rec wtxmgr.TxRecord
 	for _, output := range outputs {
-		if output.MwebOutput == nil {
+		if output.MwebOutput == nil || output.Height < 0 {
 			continue
 		}
 		if !nc.CS.MwebUtxoExists(output.MwebOutput.Hash()) {
