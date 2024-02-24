@@ -669,7 +669,7 @@ func (s *Store) rollback(ns walletdb.ReadWriteBucket, height int32) error {
 			// not moved to the unconfirmed store.  A coinbase cannot
 			// contain any debits, but all credits should be removed
 			// and the mined balance decremented.
-			if blockchain.IsCoinBaseTx(&rec.MsgTx) {
+			if blockchain.IsCoinBaseTx(&rec.MsgTx) || rec.MsgTx.HogEx() {
 				op := wire.OutPoint{Hash: rec.Hash}
 				for i, output := range rec.MsgTx.TxOut {
 					k, v := existsCredit(ns, &rec.Hash,
