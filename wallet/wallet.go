@@ -357,7 +357,7 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) (
 		return nil, nil, nil, err
 	}
 
-	leafset := addrmgrNs.Get([]byte("mwebLeafset"))
+	leafset := bytes.Clone(addrmgrNs.Get([]byte("mwebLeafset")))
 
 	// Before requesting the list of spendable UTXOs, we'll delete any
 	// expired output locks.
@@ -516,6 +516,11 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 			if err != nil {
 				return err
 			}
+		}
+
+		err = addrmgrNs.Delete([]byte("mwebLeafset"))
+		if err != nil {
+			return err
 		}
 
 		// Finally, we'll roll back our transaction store to reflect the
