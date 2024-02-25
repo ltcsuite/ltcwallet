@@ -177,7 +177,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		}
 		change := wire.NewTxOut(int64(changeAmount), changeScript)
 		if changeAmount != 0 && !txrules.IsDustOutput(change,
-			txrules.DefaultRelayFeePerKb) {
+			txrules.DefaultRelayFeePerKb) || mweb > 0 {
 
 			l := len(outputs)
 			unsignedTransaction.TxOut = append(outputs[:l:l], change)
