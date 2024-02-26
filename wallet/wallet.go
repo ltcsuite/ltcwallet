@@ -341,7 +341,7 @@ func (w *Wallet) SetChainSynced(synced bool) {
 // outputs.  This is primarely intended to provide the parameters for a
 // rescan request.
 func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) (
-	[]ltcutil.Address, []wtxmgr.Credit, []byte, error) {
+	[]ltcutil.Address, []wtxmgr.Credit, *mweb.Leafset, error) {
 
 	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
@@ -357,7 +357,13 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) (
 		return nil, nil, nil, err
 	}
 
-	leafset := bytes.Clone(addrmgrNs.Get([]byte("mwebLeafset")))
+	leafset := &mweb.Leafset{}
+	if b := addrmgrNs.Get([]byte("mwebLeafset")); b != nil {
+		err = leafset.Deserialize(bytes.NewReader(b))
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
 
 	// Before requesting the list of spendable UTXOs, we'll delete any
 	// expired output locks.
@@ -551,7 +557,7 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 	var (
 		addrs   []ltcutil.Address
 		unspent []wtxmgr.Credit
-		leafset []byte
+		leafset *mweb.Leafset
 	)
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
 		addrs, unspent, leafset, err = w.activeData(dbtx)

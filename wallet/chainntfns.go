@@ -662,7 +662,9 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 	return w.checkMwebLeafset(dbtx, n.Leafset)
 }
 
-func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) error {
+func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
+	newLeafset *mweb.Leafset) error {
+
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
@@ -670,20 +672,34 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx, newLeafset []byte) 
 		return nil
 	}
 
-	oldLeafset := addrmgrNs.Get([]byte("mwebLeafset"))
-	err := addrmgrNs.Put([]byte("mwebLeafset"), newLeafset)
+	oldLeafset := &mweb.Leafset{}
+	if b := addrmgrNs.Get([]byte("mwebLeafset")); b != nil {
+		err := oldLeafset.Deserialize(bytes.NewReader(b))
+		if err != nil {
+			return err
+		}
+	}
+
+	var buf bytes.Buffer
+	err := newLeafset.Serialize(&buf)
+	if err != nil {
+		return err
+	}
+	err = addrmgrNs.Put([]byte("mwebLeafset"), buf.Bytes())
 	if err != nil {
 		return err
 	}
 
-	if len(oldLeafset) < len(newLeafset) {
-		newLeafset = newLeafset[:len(oldLeafset)]
+	oldBits := oldLeafset.Bits
+	newBits := newLeafset.Bits
+	if len(oldBits) < len(newBits) {
+		newBits = newBits[:len(oldBits)]
 	} else {
-		oldLeafset = oldLeafset[:len(newLeafset)]
+		oldBits = oldBits[:len(newBits)]
 	}
 
-	old := new(big.Int).SetBytes(oldLeafset)
-	new := new(big.Int).SetBytes(newLeafset)
+	old := new(big.Int).SetBytes(oldBits)
+	new := new(big.Int).SetBytes(newBits)
 
 	if new.And(old, new).Cmp(old) == 0 {
 		return nil
