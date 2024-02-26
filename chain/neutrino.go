@@ -11,6 +11,7 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/gcs"
 	"github.com/ltcsuite/ltcd/ltcutil/gcs/builder"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -820,7 +821,9 @@ func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx) {
 	}
 }
 
-func (s *NeutrinoClient) onMwebUtxos(leafset []byte, utxos []*wire.MwebNetUtxo) {
+func (s *NeutrinoClient) onMwebUtxos(
+	leafset *mweb.Leafset, utxos []*wire.MwebNetUtxo) {
+
 	select {
 	case s.enqueueNotification <- MwebUtxos{leafset, utxos}:
 	case <-s.quit:

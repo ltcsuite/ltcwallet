@@ -5,6 +5,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/gcs"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/neutrino/banman"
@@ -34,8 +35,8 @@ type NeutrinoChainService interface {
 	NetTotals() (uint64, uint64)
 	RegisterMempoolCallback(func(*ltcutil.Tx))
 	NotifyMempoolReceived([]ltcutil.Address)
-	RegisterMwebUtxosCallback(func([]byte, []*wire.MwebNetUtxo))
-	NotifyAddedMwebUtxos([]byte) error
+	RegisterMwebUtxosCallback(func(*mweb.Leafset, []*wire.MwebNetUtxo))
+	NotifyAddedMwebUtxos(*mweb.Leafset) error
 	MwebUtxoExists(*chainhash.Hash) bool
 	UpdatePeerHeights(*chainhash.Hash, int32, *neutrino.ServerPeer)
 	ChainParams() chaincfg.Params

@@ -5,6 +5,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
@@ -110,7 +111,7 @@ type (
 
 	// MwebUtxos is a notification of new MWEB utxos.
 	MwebUtxos struct {
-		Leafset []byte
+		Leafset *mweb.Leafset
 		Utxos   []*wire.MwebNetUtxo
 	}
 
