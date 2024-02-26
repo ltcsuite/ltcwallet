@@ -384,19 +384,22 @@ func (w *Wallet) getMwebLeafset(dbtx walletdb.ReadTx,
 	}
 
 	var lastHeight uint32
-	mwebLeafsets.ForEach(func(k, v []byte) error {
+	err := mwebLeafsets.ForEach(func(k, v []byte) error {
 		height := binary.LittleEndian.Uint32(k)
 		if height > lastHeight && height <= maxHeight {
 			lastHeight = height
 		}
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 	if lastHeight == 0 {
 		return leafset, nil
 	}
 
 	k := binary.LittleEndian.AppendUint32(nil, lastHeight)
-	err := leafset.Deserialize(bytes.NewReader(mwebLeafsets.Get(k)))
+	err = leafset.Deserialize(bytes.NewReader(mwebLeafsets.Get(k)))
 	return leafset, err
 }
 
