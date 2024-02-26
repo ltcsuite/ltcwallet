@@ -320,6 +320,11 @@ func (w *Wallet) disconnectBlock(dbtx walletdb.ReadWriteTx, b wtxmgr.BlockMeta) 
 		}
 	}
 
+	err := w.rollbackMwebLeafset(dbtx, uint32(b.Height))
+	if err != nil {
+		return err
+	}
+
 	// Notify interested clients of the disconnected block.
 	w.NtfnServer.notifyDetachedBlock(&b.Hash)
 
