@@ -439,7 +439,7 @@ func (w *Wallet) rollbackMwebLeafset(
 	}
 
 	return mwebLeafsets.ForEach(func(k, v []byte) error {
-		if binary.LittleEndian.Uint32(k) > height {
+		if binary.LittleEndian.Uint32(k) >= height {
 			return mwebLeafsets.Delete(k)
 		}
 		return nil
@@ -592,7 +592,7 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 			}
 		}
 
-		err = w.rollbackMwebLeafset(tx, uint32(rollbackStamp.Height))
+		err = w.rollbackMwebLeafset(tx, uint32(rollbackStamp.Height+1))
 		if err != nil {
 			return err
 		}
