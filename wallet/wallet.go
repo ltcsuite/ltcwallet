@@ -371,22 +371,20 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtx
 
 var mwebLeafsets = []byte("mwebLeafsets")
 
-func (w *Wallet) getMwebLeafset(dbtx walletdb.ReadTx,
-	maxHeight uint32) (*mweb.Leafset, error) {
-
+func (w *Wallet) getMwebLeafset(dbtx walletdb.ReadTx) (*mweb.Leafset, error) {
 	var (
 		leafset      = &mweb.Leafset{}
 		addrmgrNs    = dbtx.ReadBucket(waddrmgrNamespaceKey)
 		mwebLeafsets = addrmgrNs.NestedReadBucket(mwebLeafsets)
+		lastHeight   uint32
 	)
 	if mwebLeafsets == nil {
 		return leafset, nil
 	}
 
-	var lastHeight uint32
 	err := mwebLeafsets.ForEach(func(k, v []byte) error {
 		height := binary.LittleEndian.Uint32(k)
-		if height > lastHeight && height <= maxHeight {
+		if height > lastHeight {
 			lastHeight = height
 		}
 		return nil
@@ -394,12 +392,11 @@ func (w *Wallet) getMwebLeafset(dbtx walletdb.ReadTx,
 	if err != nil {
 		return nil, err
 	}
-	if lastHeight == 0 {
-		return leafset, nil
-	}
 
-	k := binary.LittleEndian.AppendUint32(nil, lastHeight)
-	err = leafset.Deserialize(bytes.NewReader(mwebLeafsets.Get(k)))
+	if lastHeight > 0 {
+		k := binary.LittleEndian.AppendUint32(nil, lastHeight)
+		err = leafset.Deserialize(bytes.NewReader(mwebLeafsets.Get(k)))
+	}
 	return leafset, err
 }
 
@@ -430,6 +427,23 @@ func (w *Wallet) putMwebLeafset(dbtx walletdb.ReadWriteTx,
 	}
 	k := binary.LittleEndian.AppendUint32(nil, leafset.Height)
 	return mwebLeafsets.Put(k, buf.Bytes())
+}
+
+func (w *Wallet) rollbackMwebLeafset(
+	dbtx walletdb.ReadWriteTx, height uint32) error {
+
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	mwebLeafsets := addrmgrNs.NestedReadWriteBucket(mwebLeafsets)
+	if mwebLeafsets == nil {
+		return nil
+	}
+
+	return mwebLeafsets.ForEach(func(k, v []byte) error {
+		if binary.LittleEndian.Uint32(k) > height {
+			return mwebLeafsets.Delete(k)
+		}
+		return nil
+	})
 }
 
 // syncWithChain brings the wallet up to date with the current chain server
@@ -578,6 +592,11 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 			}
 		}
 
+		err = w.rollbackMwebLeafset(tx, uint32(rollbackStamp.Height))
+		if err != nil {
+			return err
+		}
+
 		// Finally, we'll roll back our transaction store to reflect the
 		// stale state. `Rollback` unconfirms transactions at and beyond
 		// the passed height, so add one to the new synced-to height to
@@ -613,7 +632,7 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		if err != nil {
 			return err
 		}
-		leafset, err = w.getMwebLeafset(dbtx, uint32(rollbackStamp.Height))
+		leafset, err = w.getMwebLeafset(dbtx)
 		return err
 	})
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"math"
 	"math/big"
 	"time"
 
@@ -672,7 +671,7 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 		return nil
 	}
 
-	oldLeafset, err := w.getMwebLeafset(dbtx, math.MaxUint32)
+	oldLeafset, err := w.getMwebLeafset(dbtx)
 	if err != nil {
 		return err
 	}
