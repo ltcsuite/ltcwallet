@@ -7,6 +7,7 @@ package wallet
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -340,9 +341,7 @@ func (w *Wallet) SetChainSynced(synced bool) {
 // activeData returns the currently-active receiving addresses and all unspent
 // outputs.  This is primarely intended to provide the parameters for a
 // rescan request.
-func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) (
-	[]ltcutil.Address, []wtxmgr.Credit, *mweb.Leafset, error) {
-
+func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtxmgr.Credit, error) {
 	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
@@ -354,15 +353,7 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) (
 		},
 	)
 	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	leafset := &mweb.Leafset{}
-	if b := addrmgrNs.Get([]byte("mwebLeafset")); b != nil {
-		err = leafset.Deserialize(bytes.NewReader(b))
-		if err != nil {
-			return nil, nil, nil, err
-		}
+		return nil, nil, err
 	}
 
 	// Before requesting the list of spendable UTXOs, we'll delete any
@@ -371,11 +362,71 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) (
 		dbtx.ReadWriteBucket(wtxmgrNamespaceKey),
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	unspent, err := w.TxStore.UnspentOutputs(txmgrNs)
-	return addrs, unspent, leafset, err
+	return addrs, unspent, err
+}
+
+var mwebLeafsets = []byte("mwebLeafsets")
+
+func (w *Wallet) getMwebLeafset(dbtx walletdb.ReadTx,
+	maxHeight uint32) (*mweb.Leafset, error) {
+
+	var (
+		leafset      = &mweb.Leafset{}
+		addrmgrNs    = dbtx.ReadBucket(waddrmgrNamespaceKey)
+		mwebLeafsets = addrmgrNs.NestedReadBucket(mwebLeafsets)
+	)
+	if mwebLeafsets == nil {
+		return leafset, nil
+	}
+
+	var lastHeight uint32
+	mwebLeafsets.ForEach(func(k, v []byte) error {
+		height := binary.LittleEndian.Uint32(k)
+		if height > lastHeight && height <= maxHeight {
+			lastHeight = height
+		}
+		return nil
+	})
+	if lastHeight == 0 {
+		return leafset, nil
+	}
+
+	k := binary.LittleEndian.AppendUint32(nil, lastHeight)
+	err := leafset.Deserialize(bytes.NewReader(mwebLeafsets.Get(k)))
+	return leafset, err
+}
+
+func (w *Wallet) putMwebLeafset(dbtx walletdb.ReadWriteTx,
+	leafset *mweb.Leafset) error {
+
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+	mwebLeafsets, err := addrmgrNs.CreateBucketIfNotExists(mwebLeafsets)
+	if err != nil {
+		return err
+	}
+
+	// Delete older and newer leafsets.
+	err = mwebLeafsets.ForEach(func(k, v []byte) error {
+		height := binary.LittleEndian.Uint32(k)
+		if height < leafset.Height-10 || height > leafset.Height {
+			return mwebLeafsets.Delete(k)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	if err = leafset.Serialize(&buf); err != nil {
+		return err
+	}
+	k := binary.LittleEndian.AppendUint32(nil, leafset.Height)
+	return mwebLeafsets.Put(k, buf.Bytes())
 }
 
 // syncWithChain brings the wallet up to date with the current chain server
@@ -524,11 +575,6 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 			}
 		}
 
-		err = addrmgrNs.Delete([]byte("mwebLeafset"))
-		if err != nil {
-			return err
-		}
-
 		// Finally, we'll roll back our transaction store to reflect the
 		// stale state. `Rollback` unconfirms transactions at and beyond
 		// the passed height, so add one to the new synced-to height to
@@ -560,7 +606,11 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		leafset *mweb.Leafset
 	)
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
-		addrs, unspent, leafset, err = w.activeData(dbtx)
+		addrs, unspent, err = w.activeData(dbtx)
+		if err != nil {
+			return err
+		}
+		leafset, err = w.getMwebLeafset(dbtx, uint32(rollbackStamp.Height))
 		return err
 	})
 	if err != nil {

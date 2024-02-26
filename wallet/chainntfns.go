@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"math/big"
 	"time"
 
@@ -665,27 +666,18 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 	newLeafset *mweb.Leafset) error {
 
-	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
 	if newLeafset == nil {
 		return nil
 	}
 
-	oldLeafset := &mweb.Leafset{}
-	if b := addrmgrNs.Get([]byte("mwebLeafset")); b != nil {
-		err := oldLeafset.Deserialize(bytes.NewReader(b))
-		if err != nil {
-			return err
-		}
-	}
-
-	var buf bytes.Buffer
-	err := newLeafset.Serialize(&buf)
+	oldLeafset, err := w.getMwebLeafset(dbtx, math.MaxUint32)
 	if err != nil {
 		return err
 	}
-	err = addrmgrNs.Put([]byte("mwebLeafset"), buf.Bytes())
+
+	err = w.putMwebLeafset(dbtx, newLeafset)
 	if err != nil {
 		return err
 	}
