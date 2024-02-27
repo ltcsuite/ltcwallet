@@ -672,7 +672,7 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
-	if newLeafset == nil {
+	if newLeafset == nil || newLeafset.Block == nil {
 		return nil
 	}
 
@@ -731,10 +731,12 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 		return nil
 	}
 
-	syncBlock := w.Manager.SyncedTo()
 	block := &wtxmgr.BlockMeta{
-		Block: wtxmgr.Block{Hash: syncBlock.Hash, Height: syncBlock.Height},
-		Time:  syncBlock.Timestamp,
+		Block: wtxmgr.Block{
+			Hash:   newLeafset.Block.BlockHash(),
+			Height: int32(newLeafset.Height),
+		},
+		Time: newLeafset.Block.Timestamp,
 	}
 
 	rec.Hash = rec.MsgTx.TxHash()
