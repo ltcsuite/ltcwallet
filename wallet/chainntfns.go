@@ -320,11 +320,6 @@ func (w *Wallet) disconnectBlock(dbtx walletdb.ReadWriteTx, b wtxmgr.BlockMeta) 
 		}
 	}
 
-	err := w.rollbackMwebLeafset(dbtx, uint32(b.Height))
-	if err != nil {
-		return err
-	}
-
 	// Notify interested clients of the disconnected block.
 	w.NtfnServer.notifyDetachedBlock(&b.Hash)
 
@@ -536,9 +531,9 @@ func (w *Wallet) extractCanonicalFromMweb(
 		rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *outpoint})
 	}
 
-	err := w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
+	err := w.forEachMwebAccount(addrmgrNs, func(scan *mw.SecretKey) error {
 		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
-			coin, err := mweb.RewindOutput(output, scanSecret)
+			coin, err := mweb.RewindOutput(output, scan)
 			if err != nil {
 				continue
 			}
@@ -592,7 +587,9 @@ func (w *Wallet) getBlockMeta(height int32) (*wtxmgr.BlockMeta, error) {
 	}, nil
 }
 
-func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
+func (w *Wallet) checkMwebUtxos(
+	dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
+
 	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
@@ -624,12 +621,14 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 		if err != nil {
 			return err
 		}
-		w.NtfnServer.notifyAttachedBlock(dbtx, block)
+		if block.Height <= w.Manager.SyncedTo().Height {
+			w.NtfnServer.notifyAttachedBlock(dbtx, block)
+		}
 	}
 
-	err := w.forEachMwebAccount(addrmgrNs, func(scanSecret *mw.SecretKey) error {
+	err := w.forEachMwebAccount(addrmgrNs, func(scan *mw.SecretKey) error {
 		for _, utxo := range remainingUtxos {
-			_, err := mweb.RewindOutput(utxo.Output, scanSecret)
+			_, err := mweb.RewindOutput(utxo.Output, scan)
 			if err != nil {
 				continue
 			}
@@ -654,7 +653,7 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 			if err != nil {
 				return err
 			}
-			if block != nil {
+			if block != nil && block.Height <= w.Manager.SyncedTo().Height {
 				w.NtfnServer.notifyAttachedBlock(dbtx, block)
 			}
 		}
@@ -670,18 +669,19 @@ func (w *Wallet) checkMwebUtxos(dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) e
 func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 	newLeafset *mweb.Leafset) error {
 
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
 	if newLeafset == nil || newLeafset.Block == nil {
 		return nil
 	}
 
-	oldLeafset, err := w.getMwebLeafset(dbtx)
+	oldLeafset, err := w.getMwebLeafset(addrmgrNs)
 	if err != nil {
 		return err
 	}
 
-	err = w.putMwebLeafset(dbtx, newLeafset)
+	err = w.putMwebLeafset(addrmgrNs, newLeafset)
 	if err != nil {
 		return err
 	}
@@ -746,7 +746,11 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 	if err != nil {
 		return err
 	}
-	w.NtfnServer.notifyAttachedBlock(dbtx, block)
+
+	if block.Height <= w.Manager.SyncedTo().Height {
+		w.NtfnServer.notifyAttachedBlock(dbtx, block)
+	}
+
 	return nil
 }
 

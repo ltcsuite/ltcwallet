@@ -8,6 +8,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/gcs"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/neutrino"
@@ -150,10 +151,11 @@ func (m *mockChainService) RegisterMempoolCallback(func(*ltcutil.Tx)) {
 func (m *mockChainService) NotifyMempoolReceived([]ltcutil.Address) {
 }
 
-func (m *mockChainService) RegisterMwebUtxosCallback(func([]byte, []*wire.MwebNetUtxo)) {
+func (m *mockChainService) RegisterMwebUtxosCallback(
+	func(*mweb.Leafset, []*wire.MwebNetUtxo)) {
 }
 
-func (m *mockChainService) NotifyAddedMwebUtxos([]byte) error {
+func (m *mockChainService) NotifyAddedMwebUtxos(*mweb.Leafset) error {
 	return errNotImplemented
 }
 

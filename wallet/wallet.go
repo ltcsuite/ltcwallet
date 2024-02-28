@@ -371,39 +371,43 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtx
 
 var mwebLeafsets = []byte("mwebLeafsets")
 
-func (w *Wallet) getMwebLeafset(dbtx walletdb.ReadTx) (*mweb.Leafset, error) {
-	var (
-		leafset      = &mweb.Leafset{}
-		addrmgrNs    = dbtx.ReadBucket(waddrmgrNamespaceKey)
-		mwebLeafsets = addrmgrNs.NestedReadBucket(mwebLeafsets)
-		lastHeight   uint32
-	)
+func (w *Wallet) getMwebLeafset(
+	addrmgrNs walletdb.ReadBucket) (*mweb.Leafset, error) {
+
+	leafset := &mweb.Leafset{}
+	mwebLeafsets := addrmgrNs.NestedReadBucket(mwebLeafsets)
 	if mwebLeafsets == nil {
 		return leafset, nil
 	}
 
 	err := mwebLeafsets.ForEach(func(k, v []byte) error {
-		height := binary.LittleEndian.Uint32(k)
-		if height > lastHeight {
-			lastHeight = height
+		lfs := &mweb.Leafset{}
+		err := lfs.Deserialize(bytes.NewReader(v))
+		if err != nil {
+			return err
 		}
+
+		hash, err := w.Manager.BlockHash(addrmgrNs, int32(lfs.Height))
+
+		switch {
+		case lfs.Height < leafset.Height:
+		case lfs.Height > uint32(w.Manager.SyncedTo().Height):
+		case waddrmgr.IsError(err, waddrmgr.ErrBlockNotFound):
+		case err != nil:
+			return err
+		case lfs.Block.BlockHash() == *hash:
+			leafset = lfs
+		}
+
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
 
-	if lastHeight > 0 {
-		k := binary.LittleEndian.AppendUint32(nil, lastHeight)
-		err = leafset.Deserialize(bytes.NewReader(mwebLeafsets.Get(k)))
-	}
 	return leafset, err
 }
 
-func (w *Wallet) putMwebLeafset(dbtx walletdb.ReadWriteTx,
-	leafset *mweb.Leafset) error {
+func (w *Wallet) putMwebLeafset(
+	addrmgrNs walletdb.ReadWriteBucket, leafset *mweb.Leafset) error {
 
-	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	mwebLeafsets, err := addrmgrNs.CreateBucketIfNotExists(mwebLeafsets)
 	if err != nil {
 		return err
@@ -427,23 +431,6 @@ func (w *Wallet) putMwebLeafset(dbtx walletdb.ReadWriteTx,
 	}
 	k := binary.LittleEndian.AppendUint32(nil, leafset.Height)
 	return mwebLeafsets.Put(k, buf.Bytes())
-}
-
-func (w *Wallet) rollbackMwebLeafset(
-	dbtx walletdb.ReadWriteTx, height uint32) error {
-
-	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
-	mwebLeafsets := addrmgrNs.NestedReadWriteBucket(mwebLeafsets)
-	if mwebLeafsets == nil {
-		return nil
-	}
-
-	return mwebLeafsets.ForEach(func(k, v []byte) error {
-		if binary.LittleEndian.Uint32(k) >= height {
-			return mwebLeafsets.Delete(k)
-		}
-		return nil
-	})
 }
 
 // syncWithChain brings the wallet up to date with the current chain server
@@ -592,11 +579,6 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 			}
 		}
 
-		err = w.rollbackMwebLeafset(tx, uint32(rollbackStamp.Height+1))
-		if err != nil {
-			return err
-		}
-
 		// Finally, we'll roll back our transaction store to reflect the
 		// stale state. `Rollback` unconfirms transactions at and beyond
 		// the passed height, so add one to the new synced-to height to
@@ -628,11 +610,13 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		leafset *mweb.Leafset
 	)
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
-		addrs, unspent, err = w.activeData(dbtx)
+		addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+		leafset, err = w.getMwebLeafset(addrmgrNs)
 		if err != nil {
 			return err
 		}
-		leafset, err = w.getMwebLeafset(dbtx)
+
+		addrs, unspent, err = w.activeData(dbtx)
 		return err
 	})
 	if err != nil {
