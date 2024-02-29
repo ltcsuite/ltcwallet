@@ -475,8 +475,14 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	return nil
 }
 
+type mwebAccount struct {
+	skm        *waddrmgr.ScopedKeyManager
+	account    uint32
+	scanSecret *mw.SecretKey
+}
+
 func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
-	fn func(*mw.SecretKey) error) error {
+	fn func(*mwebAccount) error) error {
 
 	for _, scope := range w.Manager.ScopesForExternalAddrType(waddrmgr.Mweb) {
 		s, err := w.Manager.FetchScopedKeyManager(scope)
@@ -495,7 +501,7 @@ func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
 			defer scanKeyPriv.Zero()
 			scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
 			defer zero.Bytes(scanSecret[:])
-			return fn(scanSecret)
+			return fn(&mwebAccount{s, account, scanSecret})
 		})
 		if err != nil {
 			return err
@@ -531,9 +537,9 @@ func (w *Wallet) extractCanonicalFromMweb(
 		rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *outpoint})
 	}
 
-	err := w.forEachMwebAccount(addrmgrNs, func(scan *mw.SecretKey) error {
+	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
 		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
-			coin, err := mweb.RewindOutput(output, scan)
+			coin, err := mweb.RewindOutput(output, ma.scanSecret)
 			if err != nil {
 				continue
 			}
@@ -587,10 +593,37 @@ func (w *Wallet) getBlockMeta(height int32) (*wtxmgr.BlockMeta, error) {
 	}, nil
 }
 
+func (w *Wallet) topUpAddresses(addrmgrNs walletdb.ReadWriteBucket,
+	skm *waddrmgr.ScopedKeyManager, account uint32) error {
+
+	props, err := skm.AccountProperties(addrmgrNs, account)
+	if err != nil {
+		return err
+	}
+	index := props.ExternalKeyCount - 1
+
+	// Find the last used index.
+	for ; index > 0; index-- {
+		kp := waddrmgr.DerivationPath{
+			InternalAccount: account,
+			Index:           index,
+		}
+		maddr, err := skm.DeriveFromKeyPath(addrmgrNs, kp)
+		if err != nil {
+			return err
+		}
+		if maddr.Used(addrmgrNs) {
+			break
+		}
+	}
+
+	return skm.ExtendExternalAddresses(addrmgrNs, account, index+100)
+}
+
 func (w *Wallet) checkMwebUtxos(
 	dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
 
-	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
 
 	type minedTx struct {
@@ -626,11 +659,26 @@ func (w *Wallet) checkMwebUtxos(
 		}
 	}
 
-	err := w.forEachMwebAccount(addrmgrNs, func(scan *mw.SecretKey) error {
+	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
 		for _, utxo := range remainingUtxos {
-			_, err := mweb.RewindOutput(utxo.Output, scan)
+			coin, err := mweb.RewindOutput(utxo.Output, ma.scanSecret)
 			if err != nil {
 				continue
+			}
+			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+			switch _, err = ma.skm.Address(addrmgrNs, addr); {
+			case waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound):
+				continue
+			case err != nil:
+				return err
+			}
+			err = ma.skm.MarkUsed(addrmgrNs, addr)
+			if err != nil {
+				return err
+			}
+			err = w.topUpAddresses(addrmgrNs, ma.skm, ma.account)
+			if err != nil {
+				return err
 			}
 			block, err := w.getBlockMeta(utxo.Height)
 			if err != nil {

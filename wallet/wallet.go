@@ -610,7 +610,15 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		leafset *mweb.Leafset
 	)
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
-		addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+		addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+
+		err = w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
+			return w.topUpAddresses(addrmgrNs, ma.skm, ma.account)
+		})
+		if err != nil {
+			return err
+		}
+
 		leafset, err = w.getMwebLeafset(addrmgrNs)
 		if err != nil {
 			return err
