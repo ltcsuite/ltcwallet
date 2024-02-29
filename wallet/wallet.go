@@ -7,7 +7,6 @@ package wallet
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -367,70 +366,6 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtx
 
 	unspent, err := w.TxStore.UnspentOutputs(txmgrNs)
 	return addrs, unspent, err
-}
-
-var mwebLeafsets = []byte("mwebLeafsets")
-
-func (w *Wallet) getMwebLeafset(
-	addrmgrNs walletdb.ReadBucket) (*mweb.Leafset, error) {
-
-	leafset := &mweb.Leafset{}
-	mwebLeafsets := addrmgrNs.NestedReadBucket(mwebLeafsets)
-	if mwebLeafsets == nil {
-		return leafset, nil
-	}
-
-	err := mwebLeafsets.ForEach(func(k, v []byte) error {
-		lfs := &mweb.Leafset{}
-		err := lfs.Deserialize(bytes.NewReader(v))
-		if err != nil {
-			return err
-		}
-
-		hash, err := w.Manager.BlockHash(addrmgrNs, int32(lfs.Height))
-
-		switch {
-		case lfs.Height < leafset.Height:
-		case lfs.Height > uint32(w.Manager.SyncedTo().Height):
-		case waddrmgr.IsError(err, waddrmgr.ErrBlockNotFound):
-		case err != nil:
-			return err
-		case lfs.Block.BlockHash() == *hash:
-			leafset = lfs
-		}
-
-		return nil
-	})
-
-	return leafset, err
-}
-
-func (w *Wallet) putMwebLeafset(
-	addrmgrNs walletdb.ReadWriteBucket, leafset *mweb.Leafset) error {
-
-	mwebLeafsets, err := addrmgrNs.CreateBucketIfNotExists(mwebLeafsets)
-	if err != nil {
-		return err
-	}
-
-	// Delete older and newer leafsets.
-	err = mwebLeafsets.ForEach(func(k, v []byte) error {
-		height := binary.LittleEndian.Uint32(k)
-		if height < leafset.Height-10 || height > leafset.Height {
-			return mwebLeafsets.Delete(k)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	var buf bytes.Buffer
-	if err = leafset.Serialize(&buf); err != nil {
-		return err
-	}
-	k := binary.LittleEndian.AppendUint32(nil, leafset.Height)
-	return mwebLeafsets.Put(k, buf.Bytes())
 }
 
 // syncWithChain brings the wallet up to date with the current chain server
