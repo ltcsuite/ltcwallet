@@ -669,7 +669,9 @@ func (s *Store) rollback(ns walletdb.ReadWriteBucket, height int32) error {
 			// not moved to the unconfirmed store.  A coinbase cannot
 			// contain any debits, but all credits should be removed
 			// and the mined balance decremented.
-			if blockchain.IsCoinBaseTx(&rec.MsgTx) || rec.MsgTx.HogEx() {
+			if blockchain.IsCoinBaseTx(&rec.MsgTx) ||
+				blockchain.IsHogExTx(&rec.MsgTx) {
+
 				op := wire.OutPoint{Hash: rec.Hash}
 				for i, output := range rec.MsgTx.TxOut {
 					k, v := existsCredit(ns, &rec.Hash,
@@ -914,7 +916,7 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			PkScript:     txOut.PkScript,
 			Received:     rec.Received,
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
-			IsMwebPegout: rec.MsgTx.HogEx(),
+			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
 		}
 		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, rec)
 		if err != nil {
@@ -968,7 +970,7 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			PkScript:     txOut.PkScript,
 			Received:     rec.Received,
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
-			IsMwebPegout: rec.MsgTx.HogEx(),
+			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
 		}
 		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, &rec)
 		if err != nil {
@@ -1102,7 +1104,8 @@ func (s *Store) Balance(ns walletdb.ReadBucket, minConf int32, syncHeight int32)
 				confs := syncHeight - block.Height + 1
 				if confs < minConf ||
 					blockchain.IsCoinBaseTx(&rec.MsgTx) && confs < coinbaseMaturity ||
-					rec.MsgTx.HogEx() && confs < int32(s.chainParams.MwebPegoutMaturity) {
+					blockchain.IsHogExTx(&rec.MsgTx) &&
+						confs < int32(s.chainParams.MwebPegoutMaturity) {
 					bal -= amt
 				}
 			}
