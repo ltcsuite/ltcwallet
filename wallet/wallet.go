@@ -157,6 +157,8 @@ type Wallet struct {
 	// syncRetryInterval is the amount of time to wait between re-tries on
 	// errors during initial sync.
 	syncRetryInterval time.Duration
+
+	mwebKeyPools map[skmAccount]*mwebKeyPool
 }
 
 // Start starts the goroutines necessary to manage a wallet.
@@ -545,10 +547,15 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		leafset *mweb.Leafset
 	)
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
-		addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
+		addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 
 		err = w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
-			return w.topUpAddresses(addrmgrNs, ma.skm, ma.account)
+			kp, err := newMwebKeyPool(addrmgrNs, ma)
+			if err != nil {
+				return err
+			}
+			w.mwebKeyPools[ma.skmAccount] = kp
+			return nil
 		})
 		if err != nil {
 			return err
@@ -4060,6 +4067,7 @@ func OpenWithRetry(db walletdb.DB, pubPass []byte, cbs *waddrmgr.OpenCallbacks,
 		chainParams:         params,
 		quit:                make(chan struct{}),
 		syncRetryInterval:   syncRetryInterval,
+		mwebKeyPools:        map[skmAccount]*mwebKeyPool{},
 	}
 
 	w.NtfnServer = newNotificationServer(w)

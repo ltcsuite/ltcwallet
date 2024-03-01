@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math/big"
+	"slices"
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -20,11 +21,16 @@ import (
 	"lukechampine.com/blake3"
 )
 
-type mwebAccount struct {
-	skm        *waddrmgr.ScopedKeyManager
-	account    uint32
-	scanSecret *mw.SecretKey
-}
+type (
+	skmAccount struct {
+		skm     *waddrmgr.ScopedKeyManager
+		account uint32
+	}
+	mwebAccount struct {
+		skmAccount
+		scanSecret *mw.SecretKey
+	}
+)
 
 func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
 	fn func(*mwebAccount) error) error {
@@ -46,7 +52,7 @@ func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
 			defer scanKeyPriv.Zero()
 			scanSecret := (*mw.SecretKey)(scanKeyPriv.Serialize())
 			defer zero.Bytes(scanSecret[:])
-			return fn(&mwebAccount{s, account, scanSecret})
+			return fn(&mwebAccount{skmAccount{s, account}, scanSecret})
 		})
 		if err != nil {
 			return err
@@ -166,33 +172,6 @@ func (w *Wallet) getBlockMeta(height int32) (*wtxmgr.BlockMeta, error) {
 	}, nil
 }
 
-func (w *Wallet) topUpAddresses(addrmgrNs walletdb.ReadWriteBucket,
-	skm *waddrmgr.ScopedKeyManager, account uint32) error {
-
-	props, err := skm.AccountProperties(addrmgrNs, account)
-	if err != nil {
-		return err
-	}
-	index := props.ExternalKeyCount - 1
-
-	// Find the last used index.
-	for ; index > 0; index-- {
-		kp := waddrmgr.DerivationPath{
-			InternalAccount: account,
-			Index:           index,
-		}
-		maddr, err := skm.DeriveFromKeyPath(addrmgrNs, kp)
-		if err != nil {
-			return err
-		}
-		if maddr.Used(addrmgrNs) {
-			break
-		}
-	}
-
-	return skm.ExtendExternalAddresses(addrmgrNs, account, index+100)
-}
-
 func (w *Wallet) checkMwebUtxos(
 	dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
 
@@ -239,19 +218,11 @@ func (w *Wallet) checkMwebUtxos(
 				continue
 			}
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			switch _, err = ma.skm.Address(addrmgrNs, addr); {
-			case waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound):
+			ok, err := w.mwebKeyPools[ma.skmAccount].contains(addrmgrNs, addr)
+			if err != nil {
+				return err
+			} else if !ok {
 				continue
-			case err != nil:
-				return err
-			}
-			err = ma.skm.MarkUsed(addrmgrNs, addr)
-			if err != nil {
-				return err
-			}
-			err = w.topUpAddresses(addrmgrNs, ma.skm, ma.account)
-			if err != nil {
-				return err
 			}
 			block, err := w.getBlockMeta(utxo.Height)
 			if err != nil {
@@ -437,4 +408,72 @@ func (w *Wallet) putMwebLeafset(addrmgrNs walletdb.ReadWriteBucket,
 	}
 	k := binary.LittleEndian.AppendUint32(nil, leafset.Height)
 	return mwebLeafsets.Put(k, buf.Bytes())
+}
+
+type mwebKeyPool struct {
+	mwebAccount
+	index    uint32
+	keychain *mweb.Keychain
+	addrs    []*mw.StealthAddress
+}
+
+func newMwebKeyPool(addrmgrNs walletdb.ReadBucket,
+	ma *mwebAccount) (*mwebKeyPool, error) {
+
+	props, err := ma.skm.AccountProperties(addrmgrNs, ma.account)
+	if err != nil {
+		return nil, err
+	}
+
+	spendPubKey, err := props.AccountSpendPubKey.ECPubKey()
+	if err != nil {
+		return nil, err
+	}
+
+	kp := &mwebKeyPool{
+		mwebAccount: *ma,
+		index:       props.ExternalKeyCount,
+		keychain: &mweb.Keychain{
+			Scan:        (*mw.SecretKey)(bytes.Clone(ma.scanSecret[:])),
+			SpendPubKey: (*mw.PublicKey)(spendPubKey.SerializeCompressed()),
+		},
+	}
+	kp.topUp()
+
+	return kp, nil
+}
+
+func (kp *mwebKeyPool) topUp() {
+	for len(kp.addrs) < 1000 {
+		index := kp.index + uint32(len(kp.addrs))
+		kp.addrs = append(kp.addrs, kp.keychain.Address(index))
+	}
+}
+
+func (kp *mwebKeyPool) contains(addrmgrNs walletdb.ReadWriteBucket,
+	addr *ltcutil.AddressMweb) (bool, error) {
+
+	switch _, err := kp.skm.Address(addrmgrNs, addr); {
+	case err == nil:
+		return true, nil
+	case !waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound):
+		return false, err
+	}
+
+	index := slices.IndexFunc(kp.addrs, addr.StealthAddress().Equal)
+	if index < 0 {
+		return false, nil
+	}
+
+	err := kp.skm.ExtendExternalAddresses(addrmgrNs,
+		kp.account, kp.index+uint32(index))
+	if err != nil {
+		return false, err
+	}
+
+	kp.index += uint32(index + 1)
+	kp.addrs = kp.addrs[index+1:]
+	kp.topUp()
+
+	return true, nil
 }

@@ -208,9 +208,13 @@ type AccountProperties struct {
 	// NOTE: This may be nil for imported accounts.
 	AccountPubKey *hdkeychain.ExtendedKey
 
-	// ScanKey is the account's scan private key that can be used to
-	// check for any MWEB outputs relevant to said account.
+	// AccountScanKey is the account's scan private key that can be
+	// used to check for any MWEB outputs relevant to said account.
 	AccountScanKey *hdkeychain.ExtendedKey
+
+	// AccountSpendPubKey is the account's spend public key that can
+	// be used to generate MWEB addresses for said account.
+	AccountSpendPubKey *hdkeychain.ExtendedKey
 
 	// MasterKeyFingerprint represents the fingerprint of the root key
 	// corresponding to the master public key (also known as the key with
