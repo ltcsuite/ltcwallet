@@ -432,16 +432,17 @@ func (s *Store) GetMwebOutpoint(
 	ns walletdb.ReadBucket, outputId *chainhash.Hash) (
 	op *wire.OutPoint, rec *TxRecord, err error) {
 
-	rec = &TxRecord{}
-	if op, err = existsMwebOutpoint(ns, outputId); err != nil {
-	} else if op == nil {
-		err = ErrUnknownOutput
-	} else if v := existsRawUnmined(ns, op.Hash[:]); v != nil {
-		err = readRawTxRecord(&op.Hash, v, rec)
-	} else if _, v := latestTxRecord(ns, &op.Hash); v != nil {
-		err = readRawTxRecord(&op.Hash, v, rec)
-	} else {
-		err = ErrUnknownOutput
+	op, err = existsMwebOutpoint(ns, outputId)
+	if err != nil || op == nil {
+		return
+	}
+	_, val := latestTxRecord(ns, &op.Hash)
+	if val == nil {
+		val = existsRawUnmined(ns, op.Hash[:])
+	}
+	if val != nil {
+		rec = &TxRecord{}
+		err = readRawTxRecord(&op.Hash, val, rec)
 	}
 	return
 }

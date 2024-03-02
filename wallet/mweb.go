@@ -65,92 +65,141 @@ func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
 func (w *Wallet) extractCanonicalFromMweb(
 	dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord) error {
 
-	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
 	if rec.MsgTx.Mweb == nil {
 		return nil
 	}
 
-	kernels := rec.MsgTx.Mweb.TxBody.Kernels
-	if len(kernels) > 0 {
-		// Check for sentinel kernel
-		if kernels[len(kernels)-1].Excess[0] == 0 {
-			return nil
+	for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
+		op, txRec, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
+		switch {
+		case err != nil:
+			return err
+		case txRec != nil:
+			if !slices.ContainsFunc(rec.MsgTx.TxIn, func(txIn *wire.TxIn) bool {
+				return txIn.PreviousOutPoint == *op
+			}) {
+				rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *op})
+			}
 		}
 	}
 
-	for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
-		outpoint, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
-		if err != nil {
-			continue
+	var outputs []*wire.MwebOutput
+	for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+		op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, output.Hash())
+		switch {
+		case err != nil:
+			return err
+		case op != nil:
+			if op.Hash != rec.Hash {
+				return errors.New("unexpected outpoint for output")
+			}
+		default:
+			outputs = append(outputs, output)
 		}
-		rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *outpoint})
 	}
 
 	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
-		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
-			coin, err := mweb.RewindOutput(output, ma.scanSecret)
+		var remainingOutputs []*wire.MwebOutput
+		for _, output := range outputs {
+			coin, addr, err := w.rewindOutput(addrmgrNs, ma, output)
 			if err != nil {
+				return err
+			} else if coin == nil {
+				remainingOutputs = append(remainingOutputs, output)
 				continue
 			}
-			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			rec.MsgTx.AddTxOut(wire.NewTxOut(
-				int64(coin.Value), addr.ScriptAddress()))
-			w.TxStore.AddMwebOutpoint(txmgrNs, coin.OutputId,
-				wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
+			err = w.addMwebOutpoint(txmgrNs, rec, int64(coin.Value),
+				addr.ScriptAddress(), coin.OutputId)
+			if err != nil {
+				return err
+			}
 		}
+		outputs = remainingOutputs
 		return nil
 	})
 	if err != nil {
 		return err
 	}
 
-	for _, kernel := range kernels {
-		for i, pegout := range kernel.Pegouts {
-			h := blake3.New(32, nil)
-			h.Write(kernel.Hash()[:])
-			binary.Write(h, binary.LittleEndian, uint32(i))
-			rec.MsgTx.AddTxOut(wire.NewTxOut(pegout.Value, pegout.PkScript))
-			w.TxStore.AddMwebOutpoint(txmgrNs, (*chainhash.Hash)(h.Sum(nil)),
-				wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
+	_, pegouts, err := w.getMwebPegouts(txmgrNs, rec)
+	if err != nil {
+		return err
+	}
+	for hash, pegout := range pegouts {
+		err = w.addMwebOutpoint(txmgrNs, rec,
+			pegout.Value, pegout.PkScript, &hash)
+		if err != nil {
+			return err
 		}
 	}
-
-	// Add a sentinel kernel so that we don't process this tx again.
-	rec.MsgTx.Mweb.TxBody.Kernels = append(kernels, &wire.MwebKernel{})
 
 	rec.SerializedTx = nil
 
 	return nil
 }
 
-func (w *Wallet) getMwebPegouts(txmgrNs walletdb.ReadBucket,
-	rec *wtxmgr.TxRecord) (map[uint32]bool, error) {
+func (w *Wallet) rewindOutput(addrmgrNs walletdb.ReadWriteBucket,
+	ma *mwebAccount, output *wire.MwebOutput) (
+	coin *mweb.Coin, addr *ltcutil.AddressMweb, err error) {
 
-	pegouts := make(map[uint32]bool)
+	coin, err = mweb.RewindOutput(output, ma.scanSecret)
+	if err != nil {
+		return nil, nil, nil
+	}
+	addr = ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+	ok, err := w.mwebKeyPools[ma.skmAccount].contains(addrmgrNs, addr)
+	if !ok {
+		coin = nil
+	}
+	return
+}
+
+func (w *Wallet) addMwebOutpoint(txmgrNs walletdb.ReadWriteBucket,
+	rec *wtxmgr.TxRecord, value int64, script []byte,
+	outputId *chainhash.Hash) error {
+
+	rec.MsgTx.AddTxOut(wire.NewTxOut(value, script))
+	return w.TxStore.AddMwebOutpoint(txmgrNs, outputId,
+		wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
+}
+
+func (w *Wallet) getMwebPegouts(
+	txmgrNs walletdb.ReadBucket, rec *wtxmgr.TxRecord) (
+	map[uint32]bool, map[chainhash.Hash]*wire.TxOut, error) {
+
+	found := map[uint32]bool{}
+	missing := map[chainhash.Hash]*wire.TxOut{}
 	if rec.MsgTx.Mweb == nil {
-		return pegouts, nil
+		return found, missing, nil
 	}
 
 	for _, kernel := range rec.MsgTx.Mweb.TxBody.Kernels {
-		for i := range kernel.Pegouts {
+		for i, pegout := range kernel.Pegouts {
 			h := blake3.New(32, nil)
 			h.Write(kernel.Hash()[:])
 			binary.Write(h, binary.LittleEndian, uint32(i))
-			op, _, err := w.TxStore.GetMwebOutpoint(
-				txmgrNs, (*chainhash.Hash)(h.Sum(nil)))
-			if err != nil {
-				return nil, err
+			hash := (*chainhash.Hash)(h.Sum(nil))
+			op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, hash)
+
+			switch {
+			case err != nil:
+				return nil, nil, err
+			case op != nil:
+				if op.Hash != rec.Hash {
+					return nil, nil, errors.New(
+						"unexpected outpoint for pegout")
+				}
+				found[op.Index] = true
+			default:
+				missing[*hash] = pegout
 			}
-			if op.Hash != rec.Hash {
-				return nil, errors.New("unexpected outpoint for pegout")
-			}
-			pegouts[op.Index] = true
 		}
 	}
 
-	return pegouts, nil
+	return found, missing, nil
 }
 
 func (w *Wallet) getBlockMeta(height int32) (*wtxmgr.BlockMeta, error) {
@@ -183,17 +232,17 @@ func (w *Wallet) checkMwebUtxos(
 		height int32
 	}
 	minedTxns := make(map[chainhash.Hash]minedTx)
-	var remainingUtxos []*wire.MwebNetUtxo
+	var utxos []*wire.MwebNetUtxo
 
 	for _, utxo := range n.Utxos {
 		_, rec, err := w.TxStore.GetMwebOutpoint(txmgrNs, utxo.OutputId)
-		switch err {
-		case nil:
-			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
-		case wtxmgr.ErrUnknownOutput:
-			remainingUtxos = append(remainingUtxos, utxo)
-		default:
+		switch {
+		case err != nil:
 			return err
+		case rec != nil:
+			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
+		default:
+			utxos = append(utxos, utxo)
 		}
 	}
 
@@ -212,16 +261,13 @@ func (w *Wallet) checkMwebUtxos(
 	}
 
 	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
-		for _, utxo := range remainingUtxos {
-			coin, err := mweb.RewindOutput(utxo.Output, ma.scanSecret)
-			if err != nil {
-				continue
-			}
-			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			ok, err := w.mwebKeyPools[ma.skmAccount].contains(addrmgrNs, addr)
+		var remainingUtxos []*wire.MwebNetUtxo
+		for _, utxo := range utxos {
+			coin, _, err := w.rewindOutput(addrmgrNs, ma, utxo.Output)
 			if err != nil {
 				return err
-			} else if !ok {
+			} else if coin == nil {
+				remainingUtxos = append(remainingUtxos, utxo)
 				continue
 			}
 			block, err := w.getBlockMeta(utxo.Height)
@@ -232,6 +278,7 @@ func (w *Wallet) checkMwebUtxos(
 				MsgTx: wire.MsgTx{
 					Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
 						Outputs: []*wire.MwebOutput{utxo.Output},
+						Kernels: []*wire.MwebKernel{{}},
 					}},
 				},
 				Hash:     *utxo.OutputId,
@@ -249,6 +296,7 @@ func (w *Wallet) checkMwebUtxos(
 				w.NtfnServer.notifyAttachedBlock(dbtx, block)
 			}
 		}
+		utxos = remainingUtxos
 		return nil
 	})
 	if err != nil {
