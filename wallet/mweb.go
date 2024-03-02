@@ -72,33 +72,48 @@ func (w *Wallet) extractCanonicalFromMweb(
 		return nil
 	}
 
-	kernels := rec.MsgTx.Mweb.TxBody.Kernels
-	if len(kernels) > 0 {
-		// Check for sentinel kernel
-		if kernels[len(kernels)-1].Excess[0] == 0 {
-			return nil
+	for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
+		op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
+		switch err {
+		case nil:
+			if !slices.ContainsFunc(rec.MsgTx.TxIn, func(txIn *wire.TxIn) bool {
+				return txIn.PreviousOutPoint == *op
+			}) {
+				rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *op})
+			}
+		case wtxmgr.ErrUnknownOutput:
+		default:
+			return err
 		}
 	}
 
-	for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
-		outpoint, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
-		if err != nil {
-			continue
+	var outputs []*wire.MwebOutput
+	for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+		op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, output.Hash())
+		switch err {
+		case nil:
+			if op.Hash != rec.Hash {
+				return errors.New("unexpected outpoint for output")
+			}
+		case wtxmgr.ErrUnknownOutput:
+			outputs = append(outputs, output)
+		default:
+			return err
 		}
-		rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *outpoint})
 	}
 
 	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
-		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+		for _, output := range outputs {
 			coin, err := mweb.RewindOutput(output, ma.scanSecret)
 			if err != nil {
 				continue
 			}
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			rec.MsgTx.AddTxOut(wire.NewTxOut(
-				int64(coin.Value), addr.ScriptAddress()))
-			w.TxStore.AddMwebOutpoint(txmgrNs, coin.OutputId,
-				wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
+			err = w.addMwebOutpoint(txmgrNs, rec, int64(coin.Value),
+				addr.ScriptAddress(), coin.OutputId)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -106,51 +121,66 @@ func (w *Wallet) extractCanonicalFromMweb(
 		return err
 	}
 
-	for _, kernel := range kernels {
-		for i, pegout := range kernel.Pegouts {
-			h := blake3.New(32, nil)
-			h.Write(kernel.Hash()[:])
-			binary.Write(h, binary.LittleEndian, uint32(i))
-			rec.MsgTx.AddTxOut(wire.NewTxOut(pegout.Value, pegout.PkScript))
-			w.TxStore.AddMwebOutpoint(txmgrNs, (*chainhash.Hash)(h.Sum(nil)),
-				wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
+	_, pegouts, err := w.getMwebPegouts(txmgrNs, rec)
+	if err != nil {
+		return err
+	}
+	for hash, pegout := range pegouts {
+		err = w.addMwebOutpoint(txmgrNs, rec,
+			pegout.Value, pegout.PkScript, &hash)
+		if err != nil {
+			return err
 		}
 	}
-
-	// Add a sentinel kernel so that we don't process this tx again.
-	rec.MsgTx.Mweb.TxBody.Kernels = append(kernels, &wire.MwebKernel{})
 
 	rec.SerializedTx = nil
 
 	return nil
 }
 
-func (w *Wallet) getMwebPegouts(txmgrNs walletdb.ReadBucket,
-	rec *wtxmgr.TxRecord) (map[uint32]bool, error) {
+func (w *Wallet) addMwebOutpoint(txmgrNs walletdb.ReadWriteBucket,
+	rec *wtxmgr.TxRecord, value int64, script []byte,
+	outputId *chainhash.Hash) error {
 
-	pegouts := make(map[uint32]bool)
+	rec.MsgTx.AddTxOut(wire.NewTxOut(value, script))
+	return w.TxStore.AddMwebOutpoint(txmgrNs, outputId,
+		wire.NewOutPoint(&rec.Hash, uint32(len(rec.MsgTx.TxOut)-1)))
+}
+
+func (w *Wallet) getMwebPegouts(
+	txmgrNs walletdb.ReadBucket, rec *wtxmgr.TxRecord) (
+	map[uint32]bool, map[chainhash.Hash]*wire.TxOut, error) {
+
+	found := map[uint32]bool{}
+	missing := map[chainhash.Hash]*wire.TxOut{}
 	if rec.MsgTx.Mweb == nil {
-		return pegouts, nil
+		return found, missing, nil
 	}
 
 	for _, kernel := range rec.MsgTx.Mweb.TxBody.Kernels {
-		for i := range kernel.Pegouts {
+		for i, pegout := range kernel.Pegouts {
 			h := blake3.New(32, nil)
 			h.Write(kernel.Hash()[:])
 			binary.Write(h, binary.LittleEndian, uint32(i))
-			op, _, err := w.TxStore.GetMwebOutpoint(
-				txmgrNs, (*chainhash.Hash)(h.Sum(nil)))
-			if err != nil {
-				return nil, err
+			hash := (*chainhash.Hash)(h.Sum(nil))
+			op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, hash)
+
+			switch err {
+			case nil:
+				if op.Hash != rec.Hash {
+					return nil, nil, errors.New(
+						"unexpected outpoint for pegout")
+				}
+				found[op.Index] = true
+			case wtxmgr.ErrUnknownOutput:
+				missing[*hash] = pegout
+			default:
+				return nil, nil, err
 			}
-			if op.Hash != rec.Hash {
-				return nil, errors.New("unexpected outpoint for pegout")
-			}
-			pegouts[op.Index] = true
 		}
 	}
 
-	return pegouts, nil
+	return found, missing, nil
 }
 
 func (w *Wallet) getBlockMeta(height int32) (*wtxmgr.BlockMeta, error) {
@@ -232,6 +262,7 @@ func (w *Wallet) checkMwebUtxos(
 				MsgTx: wire.MsgTx{
 					Mweb: &wire.MwebTx{TxBody: &wire.MwebTxBody{
 						Outputs: []*wire.MwebOutput{utxo.Output},
+						Kernels: []*wire.MwebKernel{{}},
 					}},
 				},
 				Hash:     *utxo.OutputId,

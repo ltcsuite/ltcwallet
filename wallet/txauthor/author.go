@@ -7,6 +7,7 @@ package txauthor
 
 import (
 	"errors"
+	"slices"
 
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
@@ -101,14 +102,24 @@ type ChangeSource struct {
 func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 	fetchInputs InputSource, changeSource *ChangeSource) (*AuthoredTx, error) {
 
+	isMweb := slices.ContainsFunc(outputs, func(txOut *wire.TxOut) bool {
+		return txscript.IsMweb(txOut.PkScript)
+	})
+
+	outputsToEstimate := outputs
+	if isMweb {
+		outputsToEstimate = nil
+	}
+
 	targetAmount := SumOutputValues(outputs)
 	estimatedSize := txsizes.EstimateVirtualSize(
-		0, 0, 1, 0, outputs, changeSource.ScriptSize,
+		0, 0, 1, 0, outputsToEstimate, changeSource.ScriptSize,
 	)
 	targetFee := txrules.FeeForSerializeSize(feeRatePerKb, estimatedSize)
+
 	mwebFee := mweb.EstimateFee(outputs, feeRatePerKb, true)
-	if mwebFee > uint64(targetFee) {
-		targetFee = ltcutil.Amount(mwebFee)
+	if isMweb {
+		targetFee += ltcutil.Amount(mwebFee)
 	}
 
 	for {
@@ -123,7 +134,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 
 		// We count the types of inputs, which we'll use to estimate
 		// the vsize of the transaction.
-		var nested, p2wpkh, p2tr, mweb, p2pkh int
+		var nested, p2wpkh, p2tr, mwebIn, p2pkh int
 		for _, pkScript := range scripts {
 			switch {
 			// If this is a p2sh output, we assume this is a
@@ -135,18 +146,28 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			case txscript.IsPayToTaproot(pkScript):
 				p2tr++
 			case txscript.IsMweb(pkScript):
-				mweb++
+				mwebIn++
 			default:
 				p2pkh++
 			}
 		}
 
+		outputsToEstimate := outputsToEstimate
+		changeScriptSize := changeSource.ScriptSize
+		if isMweb || mwebIn > 0 {
+			if mwebIn < len(inputs) {
+				outputsToEstimate = []*wire.TxOut{mweb.NewPegin(
+					uint64(inputAmount), &wire.MwebKernel{})}
+			}
+			changeScriptSize = 0
+		}
+
 		maxSignedSize := txsizes.EstimateVirtualSize(
-			p2pkh, p2tr, p2wpkh, nested, outputs, changeSource.ScriptSize,
+			p2pkh, p2tr, p2wpkh, nested, outputsToEstimate, changeScriptSize,
 		)
 		maxRequiredFee := txrules.FeeForSerializeSize(feeRatePerKb, maxSignedSize)
 
-		if mweb == len(inputs) {
+		if mwebIn == len(inputs) {
 			maxRequiredFee = ltcutil.Amount(mwebFee)
 		} else {
 			maxRequiredFee += ltcutil.Amount(mwebFee)
@@ -166,7 +187,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		}
 
 		var changeKeyScope *waddrmgr.KeyScope
-		if mweb > 0 {
+		if mwebIn > 0 {
 			changeKeyScope = &waddrmgr.KeyScopeMweb
 		}
 		changeIndex := -1
@@ -177,7 +198,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		}
 		change := wire.NewTxOut(int64(changeAmount), changeScript)
 		if changeAmount != 0 && !txrules.IsDustOutput(change,
-			txrules.DefaultRelayFeePerKb) || mweb > 0 {
+			txrules.DefaultRelayFeePerKb) || txscript.IsMweb(changeScript) {
 
 			l := len(outputs)
 			unsignedTransaction.TxOut = append(outputs[:l:l], change)

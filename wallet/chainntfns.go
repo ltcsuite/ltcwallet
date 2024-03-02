@@ -351,7 +351,7 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 		return nil
 	}
 
-	isMwebPegout, err := w.getMwebPegouts(txmgrNs, rec)
+	isMwebPegout, _, err := w.getMwebPegouts(txmgrNs, rec)
 	if err != nil {
 		return err
 	}
