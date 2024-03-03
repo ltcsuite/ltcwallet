@@ -102,24 +102,18 @@ type ChangeSource struct {
 func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 	fetchInputs InputSource, changeSource *ChangeSource) (*AuthoredTx, error) {
 
-	isMweb := slices.ContainsFunc(outputs, func(txOut *wire.TxOut) bool {
-		return txscript.IsMweb(txOut.PkScript)
-	})
-
-	outputsToEstimate := outputs
-	if isMweb {
-		outputsToEstimate = nil
-	}
-
 	targetAmount := SumOutputValues(outputs)
 	estimatedSize := txsizes.EstimateVirtualSize(
-		0, 0, 1, 0, outputsToEstimate, changeSource.ScriptSize,
+		0, 0, 1, 0, outputs, changeSource.ScriptSize,
 	)
 	targetFee := txrules.FeeForSerializeSize(feeRatePerKb, estimatedSize)
 
 	mwebFee := mweb.EstimateFee(outputs, feeRatePerKb, true)
+	isMweb := slices.ContainsFunc(outputs, func(txOut *wire.TxOut) bool {
+		return txscript.IsMweb(txOut.PkScript)
+	})
 	if isMweb {
-		targetFee += ltcutil.Amount(mwebFee)
+		targetFee = ltcutil.Amount(mwebFee)
 	}
 
 	for {
@@ -152,9 +146,10 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			}
 		}
 
-		outputsToEstimate := outputsToEstimate
+		outputsToEstimate := outputs
 		changeScriptSize := changeSource.ScriptSize
 		if isMweb || mwebIn > 0 {
+			outputsToEstimate = nil
 			if mwebIn < len(inputs) {
 				outputsToEstimate = []*wire.TxOut{mweb.NewPegin(
 					uint64(inputAmount), &wire.MwebKernel{})}

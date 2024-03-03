@@ -3746,19 +3746,14 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 		for _, coin := range newMwebCoins {
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
 			for _, kp := range w.mwebKeyPools {
-				if ok, err := kp.contains(addrmgrNs, addr); err != nil {
+				if _, err = kp.contains(addrmgrNs, addr); err != nil {
 					return err
-				} else if ok {
-					addr = nil
-					break
 				}
 			}
-			if addr != nil {
-				err = w.addMwebOutpoint(txmgrNs, txRec, int64(coin.Value),
-					addr.ScriptAddress(), coin.OutputId)
-				if err != nil {
-					return err
-				}
+			err = w.addMwebOutpoint(txmgrNs, txRec, int64(coin.Value),
+				addr.ScriptAddress(), coin.OutputId)
+			if err != nil {
+				return err
 			}
 		}
 

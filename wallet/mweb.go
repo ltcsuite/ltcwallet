@@ -73,39 +73,40 @@ func (w *Wallet) extractCanonicalFromMweb(
 	}
 
 	for _, input := range rec.MsgTx.Mweb.TxBody.Inputs {
-		op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
-		switch err {
-		case nil:
+		op, txRec, err := w.TxStore.GetMwebOutpoint(txmgrNs, &input.OutputId)
+		switch {
+		case err != nil:
+			return err
+		case txRec != nil:
 			if !slices.ContainsFunc(rec.MsgTx.TxIn, func(txIn *wire.TxIn) bool {
 				return txIn.PreviousOutPoint == *op
 			}) {
 				rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: *op})
 			}
-		case wtxmgr.ErrUnknownOutput:
-		default:
-			return err
 		}
 	}
 
 	var outputs []*wire.MwebOutput
 	for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
 		op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, output.Hash())
-		switch err {
-		case nil:
+		switch {
+		case err != nil:
+			return err
+		case op != nil:
 			if op.Hash != rec.Hash {
 				return errors.New("unexpected outpoint for output")
 			}
-		case wtxmgr.ErrUnknownOutput:
-			outputs = append(outputs, output)
 		default:
-			return err
+			outputs = append(outputs, output)
 		}
 	}
 
 	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
+		var remainingOutputs []*wire.MwebOutput
 		for _, output := range outputs {
 			coin, err := mweb.RewindOutput(output, ma.scanSecret)
 			if err != nil {
+				remainingOutputs = append(remainingOutputs, output)
 				continue
 			}
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
@@ -115,6 +116,7 @@ func (w *Wallet) extractCanonicalFromMweb(
 				return err
 			}
 		}
+		outputs = remainingOutputs
 		return nil
 	})
 	if err != nil {
@@ -165,17 +167,17 @@ func (w *Wallet) getMwebPegouts(
 			hash := (*chainhash.Hash)(h.Sum(nil))
 			op, _, err := w.TxStore.GetMwebOutpoint(txmgrNs, hash)
 
-			switch err {
-			case nil:
+			switch {
+			case err != nil:
+				return nil, nil, err
+			case op != nil:
 				if op.Hash != rec.Hash {
 					return nil, nil, errors.New(
 						"unexpected outpoint for pegout")
 				}
 				found[op.Index] = true
-			case wtxmgr.ErrUnknownOutput:
-				missing[*hash] = pegout
 			default:
-				return nil, nil, err
+				missing[*hash] = pegout
 			}
 		}
 	}
@@ -217,13 +219,13 @@ func (w *Wallet) checkMwebUtxos(
 
 	for _, utxo := range n.Utxos {
 		_, rec, err := w.TxStore.GetMwebOutpoint(txmgrNs, utxo.OutputId)
-		switch err {
-		case nil:
-			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
-		case wtxmgr.ErrUnknownOutput:
-			remainingUtxos = append(remainingUtxos, utxo)
-		default:
+		switch {
+		case err != nil:
 			return err
+		case rec != nil:
+			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
+		default:
+			remainingUtxos = append(remainingUtxos, utxo)
 		}
 	}
 
