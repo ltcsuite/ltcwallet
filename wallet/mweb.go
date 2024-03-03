@@ -65,7 +65,7 @@ func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
 func (w *Wallet) extractCanonicalFromMweb(
 	dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord) error {
 
-	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
 	if rec.MsgTx.Mweb == nil {
@@ -104,12 +104,13 @@ func (w *Wallet) extractCanonicalFromMweb(
 	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
 		var remainingOutputs []*wire.MwebOutput
 		for _, output := range outputs {
-			coin, err := mweb.RewindOutput(output, ma.scanSecret)
+			coin, addr, err := w.rewindOutput(addrmgrNs, ma, output)
 			if err != nil {
+				return err
+			} else if coin == nil {
 				remainingOutputs = append(remainingOutputs, output)
 				continue
 			}
-			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
 			err = w.addMwebOutpoint(txmgrNs, rec, int64(coin.Value),
 				addr.ScriptAddress(), coin.OutputId)
 			if err != nil {
@@ -138,6 +139,22 @@ func (w *Wallet) extractCanonicalFromMweb(
 	rec.SerializedTx = nil
 
 	return nil
+}
+
+func (w *Wallet) rewindOutput(addrmgrNs walletdb.ReadWriteBucket,
+	ma *mwebAccount, output *wire.MwebOutput) (
+	coin *mweb.Coin, addr *ltcutil.AddressMweb, err error) {
+
+	coin, err = mweb.RewindOutput(output, ma.scanSecret)
+	if err != nil {
+		return nil, nil, nil
+	}
+	addr = ltcutil.NewAddressMweb(coin.Address, w.chainParams)
+	ok, err := w.mwebKeyPools[ma.skmAccount].contains(addrmgrNs, addr)
+	if !ok {
+		coin = nil
+	}
+	return
 }
 
 func (w *Wallet) addMwebOutpoint(txmgrNs walletdb.ReadWriteBucket,
@@ -215,7 +232,7 @@ func (w *Wallet) checkMwebUtxos(
 		height int32
 	}
 	minedTxns := make(map[chainhash.Hash]minedTx)
-	var remainingUtxos []*wire.MwebNetUtxo
+	var utxos []*wire.MwebNetUtxo
 
 	for _, utxo := range n.Utxos {
 		_, rec, err := w.TxStore.GetMwebOutpoint(txmgrNs, utxo.OutputId)
@@ -225,7 +242,7 @@ func (w *Wallet) checkMwebUtxos(
 		case rec != nil:
 			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
 		default:
-			remainingUtxos = append(remainingUtxos, utxo)
+			utxos = append(utxos, utxo)
 		}
 	}
 
@@ -244,16 +261,13 @@ func (w *Wallet) checkMwebUtxos(
 	}
 
 	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
-		for _, utxo := range remainingUtxos {
-			coin, err := mweb.RewindOutput(utxo.Output, ma.scanSecret)
-			if err != nil {
-				continue
-			}
-			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			ok, err := w.mwebKeyPools[ma.skmAccount].contains(addrmgrNs, addr)
+		var remainingUtxos []*wire.MwebNetUtxo
+		for _, utxo := range utxos {
+			coin, _, err := w.rewindOutput(addrmgrNs, ma, utxo.Output)
 			if err != nil {
 				return err
-			} else if !ok {
+			} else if coin == nil {
+				remainingUtxos = append(remainingUtxos, utxo)
 				continue
 			}
 			block, err := w.getBlockMeta(utxo.Height)
@@ -282,6 +296,7 @@ func (w *Wallet) checkMwebUtxos(
 				w.NtfnServer.notifyAttachedBlock(dbtx, block)
 			}
 		}
+		utxos = remainingUtxos
 		return nil
 	})
 	if err != nil {

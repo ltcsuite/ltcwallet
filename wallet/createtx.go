@@ -140,19 +140,6 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 
 	var tx *txauthor.AuthoredTx
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
-		allCanonical, allMweb := true, true
-		for _, txOut := range outputs {
-			if txscript.IsMweb(txOut.PkScript) {
-				allCanonical = false
-			} else {
-				allMweb = false
-			}
-		}
-
-		if !allCanonical {
-			changeKeyScope = &waddrmgr.KeyScopeMweb
-		}
-
 		addrmgrNs, changeSource, err := w.addrMgrWithChangeSource(
 			dbtx, changeKeyScope, account,
 		)
@@ -165,6 +152,15 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 		)
 		if err != nil {
 			return err
+		}
+
+		allCanonical, allMweb := true, true
+		for _, txOut := range outputs {
+			if txscript.IsMweb(txOut.PkScript) {
+				allCanonical = false
+			} else {
+				allMweb = false
+			}
 		}
 
 		var eligibleCanonical, eligibleMweb []wtxmgr.Credit

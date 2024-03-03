@@ -146,14 +146,12 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			}
 		}
 
+		isMweb := isMweb || mwebIn > 0
 		outputsToEstimate := outputs
 		changeScriptSize := changeSource.ScriptSize
-		if isMweb || mwebIn > 0 {
-			outputsToEstimate = nil
-			if mwebIn < len(inputs) {
-				outputsToEstimate = []*wire.TxOut{mweb.NewPegin(
-					uint64(inputAmount), &wire.MwebKernel{})}
-			}
+		if isMweb && mwebIn < len(inputs) {
+			outputsToEstimate = []*wire.TxOut{mweb.NewPegin(
+				uint64(inputAmount), &wire.MwebKernel{})}
 			changeScriptSize = 0
 		}
 
@@ -162,10 +160,14 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		)
 		maxRequiredFee := txrules.FeeForSerializeSize(feeRatePerKb, maxSignedSize)
 
-		if mwebIn == len(inputs) {
-			maxRequiredFee = ltcutil.Amount(mwebFee)
-		} else {
-			maxRequiredFee += ltcutil.Amount(mwebFee)
+		var changeKeyScope *waddrmgr.KeyScope
+		if isMweb {
+			if mwebIn < len(inputs) {
+				maxRequiredFee += ltcutil.Amount(mwebFee)
+			} else {
+				maxRequiredFee = ltcutil.Amount(mwebFee)
+			}
+			changeKeyScope = &waddrmgr.KeyScopeMweb
 		}
 
 		remainingAmount := inputAmount - targetAmount
@@ -181,10 +183,6 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			LockTime: 0,
 		}
 
-		var changeKeyScope *waddrmgr.KeyScope
-		if mwebIn > 0 {
-			changeKeyScope = &waddrmgr.KeyScopeMweb
-		}
 		changeIndex := -1
 		changeAmount := inputAmount - targetAmount - maxRequiredFee
 		changeScript, err := changeSource.NewScript(changeKeyScope)
@@ -193,7 +191,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		}
 		change := wire.NewTxOut(int64(changeAmount), changeScript)
 		if changeAmount != 0 && !txrules.IsDustOutput(change,
-			txrules.DefaultRelayFeePerKb) || txscript.IsMweb(changeScript) {
+			txrules.DefaultRelayFeePerKb) || isMweb {
 
 			l := len(outputs)
 			unsignedTransaction.TxOut = append(outputs[:l:l], change)
