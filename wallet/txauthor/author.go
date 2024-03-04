@@ -158,6 +158,9 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		maxSignedSize := txsizes.EstimateVirtualSize(
 			p2pkh, p2tr, p2wpkh, nested, outputsToEstimate, changeScriptSize,
 		)
+		if isMweb && mwebIn < len(inputs) {
+			maxSignedSize += new(wire.TxIn).SerializeSize()
+		}
 		maxRequiredFee := txrules.FeeForSerializeSize(feeRatePerKb, maxSignedSize)
 
 		var changeKeyScope *waddrmgr.KeyScope

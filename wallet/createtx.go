@@ -312,16 +312,14 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 		// when it confirms.
 		if tx.ChangeIndex >= 0 {
 			changePkScript := tx.Tx.TxOut[tx.ChangeIndex].PkScript
-			if !txscript.IsMweb(changePkScript) {
-				_, addrs, _, err := txscript.ExtractPkScriptAddrs(
-					changePkScript, w.chainParams,
-				)
-				if err != nil {
-					return err
-				}
-				if err := chainClient.NotifyReceived(addrs); err != nil {
-					return err
-				}
+			_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+				changePkScript, w.chainParams,
+			)
+			if err != nil {
+				return err
+			}
+			if err := chainClient.NotifyReceived(addrs); err != nil {
+				return err
 			}
 		}
 
