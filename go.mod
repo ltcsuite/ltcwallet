@@ -8,7 +8,7 @@ require (
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/jrick/logrotate v1.0.0
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf
-	github.com/ltcsuite/lnd/ticker v1.0.1
+	github.com/ltcsuite/lnd/ticker v1.1.0
 	github.com/ltcsuite/lnd/tlv v0.0.0-20240222214433-454d35886119
 	github.com/ltcsuite/ltcd v0.23.6
 	github.com/ltcsuite/ltcd/btcec/v2 v2.3.2
@@ -22,10 +22,10 @@ require (
 	github.com/ltcsuite/ltcwallet/wtxmgr v1.5.1
 	github.com/ltcsuite/neutrino v0.16.0
 	github.com/ltcsuite/neutrino/cache v1.1.0
-	github.com/stretchr/testify v1.8.3
-	golang.org/x/crypto v0.7.0
-	golang.org/x/net v0.10.0
-	golang.org/x/term v0.8.0
+	github.com/stretchr/testify v1.10.0
+	golang.org/x/crypto v0.38.0
+	golang.org/x/net v0.40.0
+	golang.org/x/term v0.32.0
 	google.golang.org/grpc v1.56.3
 	google.golang.org/protobuf v1.30.0
 	lukechampine.com/blake3 v1.2.1
@@ -38,18 +38,21 @@ require (
 	github.com/decred/dcrd/crypto/blake256 v1.0.0 // indirect
 	github.com/decred/dcrd/lru v1.1.1 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
+	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
-	github.com/ltcsuite/lnd/clock v0.0.0-20200822020009-1a001cbb895a // indirect
+	github.com/ltcsuite/lnd/clock v1.1.0 // indirect
 	github.com/ltcsuite/lnd/queue v1.1.0 // indirect
 	github.com/ltcsuite/secp256k1 v0.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/stretchr/objx v0.5.0 // indirect
-	go.etcd.io/bbolt v1.3.5-0.20200615073812-232d8fc87f50 // indirect
-	golang.org/x/sys v0.13.0 // indirect
-	golang.org/x/text v0.9.0 // indirect
+	github.com/stretchr/objx v0.5.2 // indirect
+	go.etcd.io/bbolt v1.3.7 // indirect
+	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/text v0.25.0 // indirect
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-go 1.18
+go 1.23.0
+
+toolchain go1.24.2
