@@ -225,7 +225,7 @@ func (w *Wallet) checkMwebUtxos(
 	dbtx walletdb.ReadWriteTx, n *chain.MwebUtxos) error {
 
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
-	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
 	type minedTx struct {
 		rec    *wtxmgr.TxRecord
@@ -263,7 +263,7 @@ func (w *Wallet) checkMwebUtxos(
 	err := w.forEachMwebAccount(addrmgrNs, func(ma *mwebAccount) error {
 		var remainingUtxos []*wire.MwebNetUtxo
 		for _, utxo := range utxos {
-			coin, _, err := w.rewindOutput(addrmgrNs, ma, utxo.Output)
+			coin, addr, err := w.rewindOutput(addrmgrNs, ma, utxo.Output)
 			if err != nil {
 				return err
 			} else if coin == nil {
@@ -287,6 +287,11 @@ func (w *Wallet) checkMwebUtxos(
 			if utxo.Height == 0 {
 				rec.Received = time.Now()
 				block = nil
+			}
+			err = w.addMwebOutpoint(txmgrNs, rec, int64(coin.Value),
+				addr.ScriptAddress(), coin.OutputId)
+			if err != nil {
+				return err
 			}
 			err = w.addRelevantTx(dbtx, rec, block)
 			if err != nil {
