@@ -9,7 +9,6 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
-	"github.com/ltcsuite/ltcd/ltcutil/gcs"
 	"github.com/ltcsuite/ltcd/ltcutil/gcs/builder"
 	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/rpcclient"
@@ -242,12 +241,8 @@ func (s *NeutrinoClient) FilterBlocks(
 	// the filter returns a positive match, the full block is then requested
 	// and scanned for addresses using the block filterer.
 	for i, blk := range req.Blocks {
-		// TODO(wilmer): Investigate why polling it still necessary
-		// here. While testing, I ran into a few instances where the
-		// filter was not retrieved, leading to a panic. This should not
-		// happen in most cases thanks to the query logic revamp within
-		// Neutrino, but it seems there's still an uncovered edge case.
-		filter, err := s.pollCFilter(&blk.Hash)
+		filter, err := s.CS.GetCFilter(blk.Hash,
+			wire.GCSFilterRegular, neutrino.OptimisticBatch())
 		if err != nil {
 			return nil, err
 		}
@@ -342,36 +337,6 @@ func buildFilterBlocksWatchList(req *FilterBlocksRequest) ([][]byte, error) {
 	}
 
 	return watchList, nil
-}
-
-// pollCFilter attempts to fetch a CFilter from the neutrino client. This is
-// used to get around the fact that the filter headers may lag behind the
-// highest known block header.
-func (s *NeutrinoClient) pollCFilter(hash *chainhash.Hash) (*gcs.Filter, error) {
-	var (
-		filter *gcs.Filter
-		err    error
-		count  int
-	)
-
-	const maxFilterRetries = 50
-	for count < maxFilterRetries {
-		if count > 0 {
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		filter, err = s.CS.GetCFilter(
-			*hash, wire.GCSFilterRegular, neutrino.OptimisticBatch(),
-		)
-		if err != nil {
-			count++
-			continue
-		}
-
-		return filter, nil
-	}
-
-	return nil, err
 }
 
 // Rescan replicates the RPC client's Rescan command.
