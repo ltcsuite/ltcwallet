@@ -374,10 +374,12 @@ func (w *Wallet) activeData(dbtx walletdb.ReadWriteTx) ([]ltcutil.Address, []wtx
 // connection. It creates a rescan request and blocks until the rescan has
 // finished. The birthday block can be passed in, if set, to ensure we can
 // properly detect if it gets rolled back.
-func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
+func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) (
+	*waddrmgr.BlockStamp, error) {
+
 	chainClient, err := w.requireChainClient()
 	if err != nil {
-		return err
+		return birthdayStamp, err
 	}
 
 	// Neutrino relies on the information given to it by the cfheader server
@@ -397,7 +399,7 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 	if !w.isDevEnv() || neutrinoRecovery {
 		log.Debug("Waiting for chain backend to sync to tip")
 		if err := w.waitUntilBackendSynced(chainClient); err != nil {
-			return err
+			return birthdayStamp, err
 		}
 		log.Debug("Chain backend synced to tip!")
 	}
@@ -409,8 +411,8 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 			chainClient, w.Manager.Birthday(),
 		)
 		if err != nil {
-			return fmt.Errorf("unable to locate birthday block: %v",
-				err)
+			return birthdayStamp, fmt.Errorf(
+				"unable to locate birthday block: %v", err)
 		}
 
 		// We'll also determine our initial sync starting height. This
@@ -424,11 +426,11 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		// details required by the wallet.
 		startHash, err := chainClient.GetBlockHash(int64(startHeight))
 		if err != nil {
-			return err
+			return birthdayStamp, err
 		}
 		startHeader, err := chainClient.GetBlockHeader(startHash)
 		if err != nil {
-			return err
+			return birthdayStamp, err
 		}
 
 		err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
@@ -444,8 +446,8 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 			return w.Manager.SetBirthdayBlock(ns, *birthdayStamp, true)
 		})
 		if err != nil {
-			return fmt.Errorf("unable to persist initial sync "+
-				"data: %v", err)
+			return birthdayStamp, fmt.Errorf(
+				"unable to persist initial sync data: %v", err)
 		}
 	}
 
@@ -453,8 +455,8 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 	// so now.
 	if w.recoveryWindow > 0 {
 		if err := w.recovery(chainClient, birthdayStamp); err != nil {
-			return fmt.Errorf("unable to perform wallet recovery: "+
-				"%v", err)
+			return birthdayStamp, fmt.Errorf(
+				"unable to perform wallet recovery: %v", err)
 		}
 	}
 
@@ -523,7 +525,7 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		return w.TxStore.Rollback(txmgrNs, rollbackStamp.Height+1)
 	})
 	if err != nil {
-		return err
+		return birthdayStamp, err
 	}
 
 	// Request notifications for connected and disconnected blocks.
@@ -535,7 +537,7 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 	// notification re-registrations, in which case the code here should be
 	// left as is.
 	if err := chainClient.NotifyBlocks(); err != nil {
-		return err
+		return birthdayStamp, err
 	}
 
 	// Finally, we'll trigger a wallet rescan and request notifications for
@@ -570,16 +572,16 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) error {
 		return err
 	})
 	if err != nil {
-		return err
+		return birthdayStamp, err
 	}
 
 	if s, ok := chainClient.(*chain.NeutrinoClient); ok {
 		if err = s.CS.NotifyAddedMwebUtxos(leafset); err != nil {
-			return err
+			return birthdayStamp, err
 		}
 	}
 
-	return w.rescanWithTarget(addrs, unspent, nil)
+	return birthdayStamp, w.rescanWithTarget(addrs, unspent, nil)
 }
 
 // isDevEnv determines whether the wallet is currently under a local developer
@@ -798,6 +800,7 @@ func (w *Wallet) recovery(chainClient chain.Interface,
 		// state to disk.
 		recoveryBatch := recoveryMgr.BlockBatch()
 		if len(recoveryBatch) == recoveryBatchSize || height == bestHeight {
+			syncedTo := w.Manager.SyncedTo()
 			err := walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
 				ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
 				for _, block := range blocks {
@@ -812,6 +815,7 @@ func (w *Wallet) recovery(chainClient chain.Interface,
 				)
 			})
 			if err != nil {
+				w.Manager.SetSyncedToCached(syncedTo)
 				return err
 			}
 
