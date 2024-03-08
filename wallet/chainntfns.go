@@ -97,7 +97,7 @@ func (w *Wallet) handleChainNotifications() {
 				// Sync may be interrupted by actions such as
 				// locking the wallet. Try again after waiting a
 				// bit.
-				err = w.syncWithChain(birthdayBlock)
+				birthdayBlock, err = w.syncWithChain(birthdayBlock)
 				if err != nil {
 					if w.ShuttingDown() {
 						return ErrWalletShuttingDown

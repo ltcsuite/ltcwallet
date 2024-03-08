@@ -2249,9 +2249,9 @@ func PutSyncedTo(ns walletdb.ReadWriteBucket, bs *BlockStamp) error {
 		// longer store _all_ block hashes of the chain, so we only
 		// expect the previous block to exist once our initial sync has
 		// completed, which is dictated by our birthday block being set.
-		if birthdayBlock, err := FetchBirthdayBlock(ns); err == nil {
+		if _, err := FetchBirthdayBlock(ns); err == nil {
 			_, err := fetchBlockHash(ns, bs.Height-1)
-			if err != nil && bs.Height > birthdayBlock.Height {
+			if err != nil {
 				return managerError(ErrBlockNotFound, errStr, err)
 			}
 		}
