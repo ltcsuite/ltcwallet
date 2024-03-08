@@ -153,8 +153,8 @@ func (s secretSource) GetScanKey(addr ltcutil.Address) (*btcec.PrivateKey, error
 func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 	coinSelectKeyScope, changeKeyScope *waddrmgr.KeyScope,
 	account uint32, minconf int32, feeSatPerKb ltcutil.Amount,
-	coinSelectionStrategy CoinSelectionStrategy, dryRun bool) (
-	*txauthor.AuthoredTx, error) {
+	coinSelectionStrategy CoinSelectionStrategy, dryRun bool,
+	selectedUtxos []wire.OutPoint) (*txauthor.AuthoredTx, error) {
 
 	chainClient, err := w.requireChainClient()
 	if err != nil {
@@ -181,6 +181,34 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 		)
 		if err != nil {
 			return err
+		}
+
+		// check if specific UTXOs were selected by the user
+		// LTC: our behaviour is slightly different from upstream
+		if len(selectedUtxos) > 0 {
+			eligibleByOutpoint := make(
+				map[wire.OutPoint]wtxmgr.Credit,
+			)
+
+			for _, e := range eligible {
+				eligibleByOutpoint[e.OutPoint] = e
+			}
+
+			// Create a new eligible list with only the selected UTXOs
+			var filteredEligible []wtxmgr.Credit
+			for _, outpoint := range selectedUtxos {
+				e, ok := eligibleByOutpoint[outpoint]
+
+				if !ok {
+					return fmt.Errorf("selected outpoint "+
+						"not eligible for "+
+						"spending: %v", outpoint)
+				}
+				filteredEligible = append(filteredEligible, e)
+			}
+
+			// replace the full eligible list with just the selected UTXOs
+			eligible = filteredEligible
 		}
 
 		allCanonical, allMweb := true, true
