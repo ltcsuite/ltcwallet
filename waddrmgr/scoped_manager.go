@@ -1042,6 +1042,15 @@ func (s *ScopedKeyManager) existsAddress(ns walletdb.ReadBucket, addressID []byt
 func (s *ScopedKeyManager) Address(ns walletdb.ReadBucket,
 	address ltcutil.Address) (ManagedAddress, error) {
 
+	s.rootManager.mtx.RLock()
+	defer s.rootManager.mtx.RUnlock()
+
+	return s.address(ns, address)
+}
+
+func (s *ScopedKeyManager) address(ns walletdb.ReadBucket,
+	address ltcutil.Address) (ManagedAddress, error) {
+
 	// ScriptAddress will only return a script hash if we're accessing an
 	// address that is either PKH or SH. In the event we're passed a PK
 	// address, convert the PK to PKH address so that we can access it from
@@ -1060,9 +1069,6 @@ func (s *ScopedKeyManager) Address(ns walletdb.ReadBucket,
 		return ma, nil
 	}
 	s.mtx.RUnlock()
-
-	s.rootManager.mtx.RLock()
-	defer s.rootManager.mtx.RUnlock()
 
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -2586,6 +2592,12 @@ func (s *ScopedKeyManager) ForEachAccountAddress(ns walletdb.ReadBucket,
 	s.rootManager.mtx.RLock()
 	defer s.rootManager.mtx.RUnlock()
 
+	return s.forEachAccountAddress(ns, account, fn)
+}
+
+func (s *ScopedKeyManager) forEachAccountAddress(ns walletdb.ReadBucket,
+	account uint32, fn func(maddr ManagedAddress) error) error {
+
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -2614,6 +2626,12 @@ func (s *ScopedKeyManager) ForEachActiveAccountAddress(ns walletdb.ReadBucket, a
 	return s.ForEachAccountAddress(ns, account, fn)
 }
 
+func (s *ScopedKeyManager) forEachActiveAccountAddress(ns walletdb.ReadBucket, account uint32,
+	fn func(maddr ManagedAddress) error) error {
+
+	return s.forEachAccountAddress(ns, account, fn)
+}
+
 // ForEachActiveAddress calls the given function with each active address
 // stored in the manager, breaking early on error.
 func (s *ScopedKeyManager) ForEachActiveAddress(ns walletdb.ReadBucket,
@@ -2621,6 +2639,12 @@ func (s *ScopedKeyManager) ForEachActiveAddress(ns walletdb.ReadBucket,
 
 	s.rootManager.mtx.RLock()
 	defer s.rootManager.mtx.RUnlock()
+
+	return s.forEachActiveAddress(ns, fn)
+}
+
+func (s *ScopedKeyManager) forEachActiveAddress(ns walletdb.ReadBucket,
+	fn func(addr ltcutil.Address) error) error {
 
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -2648,6 +2672,12 @@ func (s *ScopedKeyManager) ForEachInternalActiveAddress(ns walletdb.ReadBucket,
 
 	s.rootManager.mtx.RLock()
 	defer s.rootManager.mtx.RUnlock()
+
+	return s.forEachInternalActiveAddress(ns, fn)
+}
+
+func (s *ScopedKeyManager) forEachInternalActiveAddress(ns walletdb.ReadBucket,
+	fn func(addr ltcutil.Address) error) error {
 
 	s.mtx.Lock()
 	defer s.mtx.Unlock()

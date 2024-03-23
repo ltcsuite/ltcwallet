@@ -721,7 +721,7 @@ func (m *Manager) Address(ns walletdb.ReadBucket,
 	// We'll iterate through each of the known scoped managers, and see if
 	// any of them now of the target address.
 	for _, scopedMgr := range m.scopedManagers {
-		addr, err := scopedMgr.Address(ns, address)
+		addr, err := scopedMgr.address(ns, address)
 		if err != nil {
 			continue
 		}
@@ -745,7 +745,7 @@ func (m *Manager) MarkUsed(ns walletdb.ReadWriteBucket, address ltcutil.Address)
 
 	// First, we'll figure out which scoped manager this address belong to.
 	for _, scopedMgr := range m.scopedManagers {
-		if _, err := scopedMgr.Address(ns, address); err != nil {
+		if _, err := scopedMgr.address(ns, address); err != nil {
 			continue
 		}
 
@@ -769,7 +769,7 @@ func (m *Manager) AddrAccount(ns walletdb.ReadBucket,
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		if _, err := scopedMgr.Address(ns, address); err != nil {
+		if _, err := scopedMgr.address(ns, address); err != nil {
 			continue
 		}
 
@@ -802,7 +802,7 @@ func (m *Manager) ForEachActiveAccountAddress(ns walletdb.ReadBucket,
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		err := scopedMgr.ForEachActiveAccountAddress(ns, account, fn)
+		err := scopedMgr.forEachActiveAccountAddress(ns, account, fn)
 		if err != nil {
 			return err
 		}
@@ -818,7 +818,7 @@ func (m *Manager) ForEachActiveAddress(ns walletdb.ReadBucket, fn func(addr ltcu
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		err := scopedMgr.ForEachActiveAddress(ns, fn)
+		err := scopedMgr.forEachActiveAddress(ns, fn)
 		if err != nil {
 			return err
 		}
@@ -852,9 +852,9 @@ func (m *Manager) ForEachRelevantActiveAddress(ns walletdb.ReadBucket,
 
 		var err error
 		if isDefaultKeyScope {
-			err = scopedMgr.ForEachActiveAddress(ns, fn)
+			err = scopedMgr.forEachActiveAddress(ns, fn)
 		} else {
-			err = scopedMgr.ForEachInternalActiveAddress(ns, fn)
+			err = scopedMgr.forEachInternalActiveAddress(ns, fn)
 		}
 		if err != nil {
 			return err
@@ -873,7 +873,7 @@ func (m *Manager) ForEachAccountAddress(ns walletdb.ReadBucket, account uint32,
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		err := scopedMgr.ForEachAccountAddress(ns, account, fn)
+		err := scopedMgr.forEachAccountAddress(ns, account, fn)
 		if err != nil {
 			return err
 		}

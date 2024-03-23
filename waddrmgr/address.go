@@ -367,18 +367,21 @@ func (a *managedAddress) ExportPubKey() string {
 //
 // This is part of the ManagedPubKeyAddress interface implementation.
 func (a *managedAddress) PrivKey() (*btcec.PrivateKey, error) {
+	a.manager.rootManager.mtx.RLock()
+	defer a.manager.rootManager.mtx.RUnlock()
+
 	// No private keys are available for a watching-only address manager.
-	if a.manager.rootManager.WatchOnly() {
+	if a.manager.rootManager.watchOnly() {
 		return nil, managerError(ErrWatchingOnly, errWatchingOnly, nil)
+	}
+
+	// Account manager must be unlocked to decrypt the private key.
+	if a.manager.rootManager.isLocked() {
+		return nil, managerError(ErrLocked, errLocked, nil)
 	}
 
 	a.manager.mtx.Lock()
 	defer a.manager.mtx.Unlock()
-
-	// Account manager must be unlocked to decrypt the private key.
-	if a.manager.rootManager.IsLocked() {
-		return nil, managerError(ErrLocked, errLocked, nil)
-	}
 
 	// Decrypt the key as needed.  Also, make sure it's a copy since the
 	// private key stored in memory can be cleared at any time.  Otherwise
@@ -883,18 +886,21 @@ func (a *scriptAddress) Used(ns walletdb.ReadBucket) bool {
 //
 // This is part of the ManagedAddress interface implementation.
 func (a *scriptAddress) Script() ([]byte, error) {
+	a.manager.rootManager.mtx.RLock()
+	defer a.manager.rootManager.mtx.RUnlock()
+
 	// No script is available for a watching-only address manager.
-	if a.manager.rootManager.WatchOnly() {
+	if a.manager.rootManager.watchOnly() {
 		return nil, managerError(ErrWatchingOnly, errWatchingOnly, nil)
+	}
+
+	// Account manager must be unlocked to decrypt the script.
+	if a.manager.rootManager.isLocked() {
+		return nil, managerError(ErrLocked, errLocked, nil)
 	}
 
 	a.manager.mtx.Lock()
 	defer a.manager.mtx.Unlock()
-
-	// Account manager must be unlocked to decrypt the script.
-	if a.manager.rootManager.IsLocked() {
-		return nil, managerError(ErrLocked, errLocked, nil)
-	}
 
 	// Decrypt the script as needed.  Also, make sure it's a copy since the
 	// script stored in memory can be cleared at any time.  Otherwise,
@@ -981,18 +987,21 @@ func (a *witnessScriptAddress) Used(ns walletdb.ReadBucket) bool {
 //
 // This is part of the ManagedAddress interface implementation.
 func (a *witnessScriptAddress) Script() ([]byte, error) {
+	a.manager.rootManager.mtx.RLock()
+	defer a.manager.rootManager.mtx.RUnlock()
+
 	// No script is available for a watching-only address manager.
-	if a.isSecretScript && a.manager.rootManager.WatchOnly() {
+	if a.isSecretScript && a.manager.rootManager.watchOnly() {
 		return nil, managerError(ErrWatchingOnly, errWatchingOnly, nil)
+	}
+
+	// Account manager must be unlocked to decrypt the script.
+	if a.isSecretScript && a.manager.rootManager.isLocked() {
+		return nil, managerError(ErrLocked, errLocked, nil)
 	}
 
 	a.manager.mtx.Lock()
 	defer a.manager.mtx.Unlock()
-
-	// Account manager must be unlocked to decrypt the script.
-	if a.isSecretScript && a.manager.rootManager.IsLocked() {
-		return nil, managerError(ErrLocked, errLocked, nil)
-	}
 
 	cryptoKey := a.manager.rootManager.cryptoKeyScript
 	if !a.isSecretScript {
