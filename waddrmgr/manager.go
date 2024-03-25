@@ -1707,10 +1707,9 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 		str := "failed to derive cointype extended key"
 		return managerError(ErrKeyChain, str, err)
 	}
+	defer coinTypeKeyPriv.Zero()
 	if scope == KeyScopeLiteWallet {
 		coinTypeKeyPriv = root
-	} else {
-		defer coinTypeKeyPriv.Zero()
 	}
 
 	// Derive the account key for the first account according our
