@@ -198,19 +198,19 @@ var (
 	// it.
 	KeyScopeBIP0044 = KeyScope{
 		Purpose: 44,
-		Coin:    0,
+		Coin:    2,
 	}
 
 	// KeyScopeMweb is the key scope for MWEB derivation.
 	KeyScopeMweb = KeyScope{
 		Purpose: 1000,
-		Coin:    0,
+		Coin:    2,
 	}
 
 	// KeyScopeLiteWallet is the key scope for LiteWallet derivation.
 	KeyScopeLiteWallet = KeyScope{
 		Purpose: 9999,
-		Coin:    0,
+		Coin:    2,
 	}
 
 	// DefaultKeyScopes is the set of default key scopes that will be
