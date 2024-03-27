@@ -3095,11 +3095,11 @@ func (w *Wallet) ReleaseOutput(id wtxmgr.LockID, op wire.OutPoint) error {
 // credits that are not known to have been mined into a block, and attempts
 // to send each to the chain server for relay.
 func (w *Wallet) resendUnminedTxs() {
-	var txs []*wire.MsgTx
+	var txs []*wtxmgr.TxRecord
 	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
 		txmgrNs := tx.ReadBucket(wtxmgrNamespaceKey)
 		var err error
-		txs, err = w.TxStore.UnminedTxs(txmgrNs)
+		txs, err = w.TxStore.UnminedTxRecords(txmgrNs)
 		return err
 	})
 	if err != nil {
@@ -3112,7 +3112,7 @@ func (w *Wallet) resendUnminedTxs() {
 		txHash, err := w.publishTransaction(tx)
 		if err != nil {
 			log.Debugf("Unable to rebroadcast transaction %v: %v",
-				tx.TxHash(), err)
+				tx.Hash, err)
 			continue
 		}
 
@@ -3764,7 +3764,6 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 		// If there is a label we should write, get the namespace key
 		// and record it in the tx store.
 		if len(label) != 0 {
-			txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
 			if err = w.TxStore.PutTxLabel(txmgrNs, tx.TxHash(), label); err != nil {
 				return err
 			}
@@ -3783,23 +3782,29 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 		return nil, err
 	}
 
-	return w.publishTransaction(tx)
+	return w.publishTransaction(txRec)
 }
 
 // publishTransaction attempts to send an unconfirmed transaction to the
 // wallet's current backend. In the event that sending the transaction fails for
 // whatever reason, it will be removed from the wallet's unconfirmed transaction
 // store.
-func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
+func (w *Wallet) publishTransaction(txRec *wtxmgr.TxRecord) (*chainhash.Hash, error) {
 	chainClient, err := w.requireChainClient()
 	if err != nil {
 		return nil, err
 	}
 
 	var (
-		txid      = tx.TxHash()
+		tx        = &wire.MsgTx{}
+		txid      = txRec.Hash
 		returnErr error
 	)
+
+	err = tx.Deserialize(bytes.NewReader(txRec.BroadcastTx))
+	if err != nil {
+		return nil, err
+	}
 
 	_, err = chainClient.SendRawTransaction(tx, false)
 	if err == nil {
@@ -3819,10 +3824,6 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 	case errors.As(returnErr, &errAlreadyConfirmed):
 		dbErr := walletdb.Update(w.db, func(dbTx walletdb.ReadWriteTx) error {
 			txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
-			txRec, err := wtxmgr.NewTxRecordFromMsgTx(tx, time.Now())
-			if err != nil {
-				return err
-			}
 			return w.TxStore.RemoveUnminedTx(txmgrNs, txRec)
 		})
 		if dbErr != nil {
@@ -3845,10 +3846,6 @@ func (w *Wallet) publishTransaction(tx *wire.MsgTx) (*chainhash.Hash, error) {
 	// wallet won't be accurate.
 	dbErr := walletdb.Update(w.db, func(dbTx walletdb.ReadWriteTx) error {
 		txmgrNs := dbTx.ReadWriteBucket(wtxmgrNamespaceKey)
-		txRec, err := wtxmgr.NewTxRecordFromMsgTx(tx, time.Now())
-		if err != nil {
-			return err
-		}
 		return w.TxStore.RemoveUnminedTx(txmgrNs, txRec)
 	})
 	if dbErr != nil {
