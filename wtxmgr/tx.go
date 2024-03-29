@@ -867,6 +867,10 @@ func (s *Store) rollback(ns walletdb.ReadWriteBucket, height int32) error {
 // UnspentOutputs returns all unspent received transaction outputs.
 // The order is undefined.
 func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
+	return s.UnspentOutputs2(ns, false)
+}
+
+func (s *Store) UnspentOutputs2(ns walletdb.ReadBucket, all bool) ([]Credit, error) {
 	var unspent []Credit
 
 	var op wire.OutPoint
@@ -883,7 +887,7 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			return nil
 		}
 
-		if existsRawUnminedInput(ns, k) != nil {
+		if existsRawUnminedInput(ns, k) != nil && !all {
 			// Output is spent by an unmined transaction.
 			// Skip this k/v pair.
 			return nil
@@ -945,7 +949,7 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			return nil
 		}
 
-		if existsRawUnminedInput(ns, k) != nil {
+		if existsRawUnminedInput(ns, k) != nil && !all {
 			// Output is spent by an unmined transaction.
 			// Skip to next unmined credit.
 			return nil

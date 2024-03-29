@@ -239,7 +239,7 @@ func (w *Wallet) checkMwebUtxos(
 		switch {
 		case err != nil:
 			return err
-		case rec != nil:
+		case rec != nil && rec.MsgTx.Mweb != nil:
 			minedTxns[rec.Hash] = minedTx{rec, utxo.Height}
 		default:
 			utxos = append(utxos, utxo)
