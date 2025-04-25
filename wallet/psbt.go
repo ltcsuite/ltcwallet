@@ -10,6 +10,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -380,7 +381,7 @@ func createOutputInfo(txOut *wire.TxOut,
 // NOTE: This method does NOT publish the transaction after it's been finalized
 // successfully.
 func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
-	packet *psbt.Packet) error {
+	mwebKeychain *mweb.Keychain, packet *psbt.Packet) error {
 
 	// Let's check that this is actually something we can and want to sign.
 	// We need at least one input and one output. In addition each
@@ -501,6 +502,23 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 		}
 		packet.Inputs[idx].FinalScriptWitness = witnessBytes.Bytes()
 		packet.Inputs[idx].FinalScriptSig = sigScript
+	}
+
+	if mwebKeychain != nil {
+		mwebInputSigner := psbt.BasicMwebInputSigner{
+			Keychain:           mwebKeychain,
+			LookupAddressIndex: psbt.NaiveAddressLookup,
+		}
+		psbtSigner, err := psbt.NewSigner(packet, mwebInputSigner)
+		if err != nil {
+			return fmt.Errorf("error creating PSBT signer: %v", err)
+		}
+		signOutcome, err := psbtSigner.SignMwebComponents()
+		if err != nil {
+			return fmt.Errorf("error during MWEB signing: %v", err)
+		} else if signOutcome != psbt.SignSuccesful {
+			return fmt.Errorf("mweb components not signed successfully")
+		}
 	}
 
 	// Make sure the PSBT itself thinks it's finalized and ready to be
