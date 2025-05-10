@@ -27,6 +27,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func init() {
+	chaincfg.MainNetParams.HDCoinType = 0
+}
+
 // failingCryptoKey is an implementation of the EncryptorDecryptor interface
 // with intentionally fails when attempting to encrypt or decrypt with it.
 type failingCryptoKey struct {
@@ -347,12 +351,11 @@ func testAddress(tc *testContext, prefix string, gotAddr ManagedAddress,
 // generating multiple addresses via NextExternalAddresses, ensuring they can be
 // retrieved by Address, and that they work properly when the manager is locked
 // and unlocked.
-func testExternalAddresses(tc *testContext) bool {
+func testExternalAddresses(tc *testContext, expectedAddrs []expectedAddr) bool {
 	prefix := testNamePrefix(tc) + " testExternalAddresses"
 	var addrs []ManagedAddress
 	if tc.create {
 		prefix := prefix + " NextExternalAddresses"
-		var addrs []ManagedAddress
 		err := walletdb.Update(tc.db, func(tx walletdb.ReadWriteTx) error {
 			ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
 			var err error
@@ -365,10 +368,10 @@ func testExternalAddresses(tc *testContext) bool {
 			tc.t.Errorf("%s: unexpected error: %v", prefix, err)
 			return false
 		}
-		if len(addrs) != len(expectedExternalAddrs) {
+		if len(addrs) != len(expectedAddrs) {
 			tc.t.Errorf("%s: unexpected number of addresses - got "+
 				"%d, want %d", prefix, len(addrs),
-				len(expectedExternalAddrs))
+				len(expectedAddrs))
 			return false
 		}
 	}
@@ -382,7 +385,7 @@ func testExternalAddresses(tc *testContext) bool {
 		// of the tests.
 		for i := 0; i < len(addrs); i++ {
 			prefix := fmt.Sprintf("%s ExternalAddress #%d", prefix, i)
-			if !testAddress(tc, prefix, addrs[i], &expectedExternalAddrs[i]) {
+			if !testAddress(tc, prefix, addrs[i], &expectedAddrs[i]) {
 				return false
 			}
 		}
@@ -402,20 +405,19 @@ func testExternalAddresses(tc *testContext) bool {
 			tc.t.Errorf("%s: unexpected error: %v", leaPrefix, err)
 			return false
 		}
-		if !testAddress(tc, leaPrefix, lastAddr, &expectedExternalAddrs[len(expectedExternalAddrs)-1]) {
+		if !testAddress(tc, leaPrefix, lastAddr, &expectedAddrs[len(expectedAddrs)-1]) {
 			return false
 		}
 
 		// Now, use the Address API to retrieve each of the expected new
 		// addresses and ensure they're accurate.
 		chainParams := tc.manager.ChainParams()
-		for i := 0; i < len(expectedExternalAddrs); i++ {
-			pkHash := expectedExternalAddrs[i].addressHash
-			utilAddr, err := ltcutil.NewAddressPubKeyHash(
-				pkHash, chainParams,
+		for i := 0; i < len(expectedAddrs); i++ {
+			utilAddr, err := ltcutil.DecodeAddress(
+				expectedAddrs[i].address, chainParams,
 			)
 			if err != nil {
-				tc.t.Errorf("%s NewAddressPubKeyHash #%d: "+
+				tc.t.Errorf("%s DecodeAddress #%d: "+
 					"unexpected error: %v", prefix, i, err)
 				return false
 			}
@@ -434,7 +436,7 @@ func testExternalAddresses(tc *testContext) bool {
 				return false
 			}
 
-			if !testAddress(tc, prefix, addr, &expectedExternalAddrs[i]) {
+			if !testAddress(tc, prefix, addr, &expectedAddrs[i]) {
 				return false
 			}
 		}
@@ -1723,7 +1725,7 @@ func testForEachAccountAddress(tc *testContext) bool {
 		prefix := fmt.Sprintf("%s: #%d", prefix, i)
 		gotAddr := addrs[i]
 		wantAddr := expectedAddrMap[gotAddr.Address().String()]
-		if !testAddress(tc, prefix, gotAddr, wantAddr) {
+		if wantAddr != nil && !testAddress(tc, prefix, gotAddr, wantAddr) {
 			return false
 		}
 		delete(expectedAddrMap, gotAddr.Address().String())
@@ -1745,7 +1747,7 @@ func testManagerAPI(tc *testContext, caseCreatedWatchingOnly bool) {
 	if !caseCreatedWatchingOnly {
 		// Test API for normal create (w/ seed) case.
 		testLocking(tc)
-		testExternalAddresses(tc)
+		testExternalAddresses(tc, expectedExternalAddrs)
 		testInternalAddresses(tc)
 		testImportPrivateKey(tc)
 		testImportScript(tc)
@@ -1764,7 +1766,7 @@ func testManagerAPI(tc *testContext, caseCreatedWatchingOnly bool) {
 		testRenameAccount(tc)
 	} else {
 		// Test API for created watch-only case.
-		testExternalAddresses(tc)
+		testExternalAddresses(tc, expectedExternalAddrs)
 		testInternalAddresses(tc)
 		testMarkUsed(tc, false)
 		testChangePassphrase(tc)
@@ -2073,7 +2075,7 @@ func testManagerCase(t *testing.T, caseName string,
 
 	// Run all of the manager API tests in create mode and close the
 	// manager after they've completed
-	testManagerAPI(&testContext{
+	tc := &testContext{
 		t:               t,
 		caseName:        caseName,
 		db:              db,
@@ -2082,7 +2084,18 @@ func testManagerCase(t *testing.T, caseName string,
 		internalAccount: 0,
 		create:          true,
 		watchingOnly:    caseCreatedWatchingOnly,
-	}, caseCreatedWatchingOnly)
+	}
+	testManagerAPI(tc, caseCreatedWatchingOnly)
+
+	if !caseCreatedWatchingOnly {
+		// Test MWEB address derivation
+		tc.manager, err = mgr.FetchScopedKeyManager(KeyScopeMweb)
+		if err != nil {
+			t.Fatalf("(%s) unable to fetch default scope: %v", caseName, err)
+		}
+		tc.internalAccount = 0
+		testExternalAddresses(tc, expectedMwebAddrs)
+	}
 	mgr.Close()
 
 	// Open the manager and run all the tests again in open mode which
@@ -2103,7 +2116,7 @@ func testManagerCase(t *testing.T, caseName string,
 	if err != nil {
 		t.Fatalf("(%s) unable to fetch default scope: %v", caseName, err)
 	}
-	tc := &testContext{
+	tc = &testContext{
 		t:               t,
 		caseName:        caseName,
 		db:              db,
@@ -2143,7 +2156,8 @@ func deriveTestAccountKey(t *testing.T) *hdkeychain.ExtendedKey {
 		t.Errorf("NewMaster: unexpected error: %v", err)
 		return nil
 	}
-	scopeKey, err := deriveCoinTypeKey(masterKey, KeyScopeBIP0044)
+	scopeKey, err := deriveCoinTypeKey(masterKey, KeyScopeBIP0044,
+		chaincfg.MainNetParams.HDCoinType)
 	if err != nil {
 		t.Errorf("derive: unexpected error: %v", err)
 		return nil
@@ -3245,6 +3259,7 @@ func TestManagedAddressValidation(t *testing.T) {
 				)
 
 				var addr ManagedAddress
+				var scanKey *btcec.PrivateKey
 
 				// With the scoped managed we created above,
 				// generate a new address.
@@ -3255,6 +3270,17 @@ func TestManagedAddressValidation(t *testing.T) {
 					)
 					if err != nil {
 						return err
+					}
+
+					props, err := scopedMgr.AccountProperties(ns, 0)
+					if err != nil {
+						return err
+					}
+					if props.AccountScanKey != nil {
+						scanKey, err = props.AccountScanKey.ECPrivKey()
+						if err != nil {
+							return err
+						}
 					}
 
 					addr = addrs[0]
@@ -3275,7 +3301,7 @@ func TestManagedAddressValidation(t *testing.T) {
 
 				var msg [32]byte
 				require.ErrorIs(
-					t, pubKeyAddr.Validate(msg, privKeyForAddr),
+					t, pubKeyAddr.Validate(msg, privKeyForAddr, scanKey),
 					testCase.expectedErr,
 				)
 			})

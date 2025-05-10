@@ -106,12 +106,18 @@ func makeTxSummary(dbtx walletdb.ReadTx, w *Wallet, details *wtxmgr.TxDetails) T
 		serializedTx = buf.Bytes()
 	}
 	var fee ltcutil.Amount
-	if len(details.Debits) == len(details.MsgTx.TxIn) {
+	nDebits := len(details.Debits)
+	if nDebits > 0 && nDebits == len(details.MsgTx.TxIn) {
 		for _, deb := range details.Debits {
 			fee += deb.Amount
 		}
 		for _, txOut := range details.MsgTx.TxOut {
 			fee -= ltcutil.Amount(txOut.Value)
+		}
+		if details.MsgTx.Mweb != nil {
+			for _, kernel := range details.MsgTx.Mweb.TxBody.Kernels {
+				fee += ltcutil.Amount(kernel.Pegin)
+			}
 		}
 	}
 	var inputs []TransactionSummaryInput
@@ -143,6 +149,7 @@ func makeTxSummary(dbtx walletdb.ReadTx, w *Wallet, details *wtxmgr.TxDetails) T
 	return TransactionSummary{
 		Hash:        &details.Hash,
 		Transaction: serializedTx,
+		Broadcast:   details.BroadcastTx,
 		MyInputs:    inputs,
 		MyOutputs:   outputs,
 		Fee:         fee,
@@ -361,6 +368,7 @@ type Block struct {
 type TransactionSummary struct {
 	Hash        *chainhash.Hash
 	Transaction []byte
+	Broadcast   []byte
 	MyInputs    []TransactionSummaryInput
 	MyOutputs   []TransactionSummaryOutput
 	Fee         ltcutil.Amount

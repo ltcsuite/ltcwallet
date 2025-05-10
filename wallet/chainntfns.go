@@ -97,7 +97,7 @@ func (w *Wallet) handleChainNotifications() {
 				// Sync may be interrupted by actions such as
 				// locking the wallet. Try again after waiting a
 				// bit.
-				err = w.syncWithChain(birthdayBlock)
+				birthdayBlock, err = w.syncWithChain(birthdayBlock)
 				if err != nil {
 					if w.ShuttingDown() {
 						return ErrWalletShuttingDown
@@ -190,6 +190,11 @@ func (w *Wallet) handleChainNotifications() {
 					})
 				}
 				notificationName = "filtered block connected"
+			case chain.MwebUtxos:
+				err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+					return w.checkMwebUtxos(tx, &n)
+				})
+				notificationName = "mweb utxos"
 
 			// The following require some database maintenance, but also
 			// need to be reported to the wallet's rescan goroutine.
@@ -319,6 +324,16 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	addrmgrNs := dbtx.ReadWriteBucket(waddrmgrNamespaceKey)
 	txmgrNs := dbtx.ReadWriteBucket(wtxmgrNamespaceKey)
 
+	txDetails, _ := w.TxStore.TxDetails(txmgrNs, &rec.Hash)
+	if txDetails != nil {
+		rec = &txDetails.TxRecord
+	}
+
+	err := w.extractCanonicalFromMweb(dbtx, rec)
+	if err != nil {
+		return err
+	}
+
 	// At the moment all notified transactions are assumed to actually be
 	// relevant.  This assumption will not hold true when SPV support is
 	// added, but until then, simply insert the transaction because there
@@ -334,6 +349,11 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	// calls below.
 	if exists {
 		return nil
+	}
+
+	isMwebPegout, _, err := w.getMwebPegouts(txmgrNs, rec)
+	if err != nil {
+		return err
 	}
 
 	// Check every output to determine whether it is controlled by a wallet
@@ -376,11 +396,13 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 			// TODO: Credits should be added with the
 			// account they belong to, so wtxmgr is able to
 			// track per-account balances.
-			err = w.TxStore.AddCredit(
-				txmgrNs, rec, block, uint32(i), ma.Internal(),
-			)
-			if err != nil {
-				return err
+			if !isMwebPegout[uint32(i)] {
+				err = w.TxStore.AddCredit(
+					txmgrNs, rec, block, uint32(i), ma.Internal(),
+				)
+				if err != nil {
+					return err
+				}
 			}
 			err = w.Manager.MarkUsed(addrmgrNs, addr)
 			if err != nil {
@@ -420,6 +442,10 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 		// wallet's set of confirmed transactions.
 		if details != nil {
 			w.NtfnServer.notifyMinedTransaction(dbtx, details, block)
+		}
+
+		if nc, ok := w.ChainClient().(*chain.NeutrinoClient); ok {
+			nc.CS.MarkAsConfirmed(rec.Hash)
 		}
 	}
 

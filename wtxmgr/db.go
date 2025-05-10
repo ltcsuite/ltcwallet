@@ -70,6 +70,7 @@ var (
 	bucketUnminedCredits = []byte("mc")
 	bucketUnminedInputs  = []byte("mi")
 	bucketLockedOutputs  = []byte("lo")
+	bucketMwebOutpoints  = []byte("mo")
 )
 
 // Root (namespace) bucket keys
@@ -368,7 +369,9 @@ func deleteBlockRecord(ns walletdb.ReadWriteBucket, height int32) error {
 // The record value is serialized as such:
 //
 //   [0:8]   Received time (8 bytes)
-//   [8:]    Serialized transaction (varies)
+//   [8:n]   Serialized transaction (varies)
+//   [n:n+4] Size of broadcast transaction
+//   [n+4:m] Broadcast transaction (varies)
 
 func keyTxRecord(txHash *chainhash.Hash, block *Block) []byte {
 	k := make([]byte, 68)
@@ -379,22 +382,20 @@ func keyTxRecord(txHash *chainhash.Hash, block *Block) []byte {
 }
 
 func valueTxRecord(rec *TxRecord) ([]byte, error) {
-	var v []byte
+	var buf bytes.Buffer
+	binary.Write(&buf, byteOrder, uint64(rec.Received.Unix()))
 	if rec.SerializedTx == nil {
-		txSize := rec.MsgTx.SerializeSize()
-		v = make([]byte, 8, 8+txSize)
-		err := rec.MsgTx.Serialize(bytes.NewBuffer(v[8:]))
+		err := rec.MsgTx.Serialize(&buf)
 		if err != nil {
 			str := fmt.Sprintf("unable to serialize transaction %v", rec.Hash)
 			return nil, storeError(ErrInput, str, err)
 		}
-		v = v[:cap(v)]
 	} else {
-		v = make([]byte, 8+len(rec.SerializedTx))
-		copy(v[8:], rec.SerializedTx)
+		buf.Write(rec.SerializedTx)
 	}
-	byteOrder.PutUint64(v, uint64(rec.Received.Unix()))
-	return v, nil
+	binary.Write(&buf, byteOrder, uint32(len(rec.BroadcastTx)))
+	buf.Write(rec.BroadcastTx)
+	return buf.Bytes(), nil
 }
 
 func putTxRecord(ns walletdb.ReadWriteBucket, rec *TxRecord, block *Block) error {
@@ -428,11 +429,26 @@ func readRawTxRecord(txHash *chainhash.Hash, v []byte, rec *TxRecord) error {
 	}
 	rec.Hash = *txHash
 	rec.Received = time.Unix(int64(byteOrder.Uint64(v)), 0)
-	err := rec.MsgTx.Deserialize(bytes.NewReader(v[8:]))
+	buf := bytes.NewReader(v[8:])
+	err := rec.MsgTx.Deserialize(buf)
 	if err != nil {
 		str := fmt.Sprintf("%s: failed to deserialize transaction %v",
 			bucketTxRecords, txHash)
 		return storeError(ErrData, str, err)
+	}
+	var n uint32
+	err = binary.Read(buf, byteOrder, &n)
+	if err != nil {
+		str := fmt.Sprintf("%s: failed to read length", bucketTxRecords)
+		return storeError(ErrData, str, err)
+	}
+	if n > 0 {
+		rec.BroadcastTx = make([]byte, n)
+		_, err = buf.Read(rec.BroadcastTx)
+		if err != nil {
+			str := fmt.Sprintf("%s: failed to read BroadcastTx", bucketTxRecords)
+			return storeError(ErrData, str, err)
+		}
 	}
 	return nil
 }
@@ -991,7 +1007,9 @@ func (it *debitIterator) next() bool {
 // transaction hash.  The value matches that of mined transaction records:
 //
 //   [0:8]   Received time (8 bytes)
-//   [8:]    Serialized transaction (varies)
+//   [8:n]   Serialized transaction (varies)
+//   [n:n+4] Size of broadcast transaction
+//   [n+4:m] Broadcast transaction (varies)
 
 func putRawUnmined(ns walletdb.ReadWriteBucket, k, v []byte) error {
 	err := ns.NestedReadWriteBucket(bucketUnmined).Put(k, v)
@@ -1405,6 +1423,43 @@ func forEachLockedOutput(ns walletdb.ReadBucket,
 	})
 }
 
+// The mweb outpoint index records synthetic outpoints for mweb outputs
+// and is keyed by mweb output id.
+//
+// Values use the canonical outpoint serialization:
+//
+//   [0:32]  Transaction hash (32 bytes)
+//   [32:36] Output index (4 bytes)
+
+func putMwebOutpoint(ns walletdb.ReadWriteBucket,
+	outputId *chainhash.Hash, outPoint *wire.OutPoint) error {
+
+	v := canonicalOutPoint(&outPoint.Hash, outPoint.Index)
+	err := ns.NestedReadWriteBucket(bucketMwebOutpoints).Put(outputId[:], v)
+	if err != nil {
+		str := "cannot put mweb outpoint"
+		return storeError(ErrDatabase, str, err)
+	}
+	return nil
+}
+
+// existsMwebOutpoint returns the synthetic outpoint for the mweb output.
+// If there is no outpoint recorded, the result is nil.
+func existsMwebOutpoint(ns walletdb.ReadBucket,
+	outputId *chainhash.Hash) (*wire.OutPoint, error) {
+
+	v := ns.NestedReadBucket(bucketMwebOutpoints).Get(outputId[:])
+	if v == nil {
+		return nil, nil
+	}
+	var op wire.OutPoint
+	err := readCanonicalOutPoint(v, &op)
+	if err != nil {
+		return nil, err
+	}
+	return &op, nil
+}
+
 // openStore opens an existing transaction store from the passed namespace.
 func openStore(ns walletdb.ReadBucket) error {
 	version, err := fetchVersion(ns)
@@ -1504,6 +1559,10 @@ func createBuckets(ns walletdb.ReadWriteBucket) error {
 		str := "failed to create locked outputs bucket"
 		return storeError(ErrDatabase, str, err)
 	}
+	if _, err := ns.CreateBucket(bucketMwebOutpoints); err != nil {
+		str := "failed to create mweb outpoints bucket"
+		return storeError(ErrDatabase, str, err)
+	}
 
 	return nil
 }
@@ -1546,6 +1605,10 @@ func deleteBuckets(ns walletdb.ReadWriteBucket) error {
 	err := ns.DeleteNestedBucket(bucketLockedOutputs)
 	if err != nil && err != walletdb.ErrBucketNotFound {
 		str := "failed to delete locked outputs bucket"
+		return storeError(ErrDatabase, str, err)
+	}
+	if err := ns.DeleteNestedBucket(bucketMwebOutpoints); err != nil {
+		str := "failed to delete mweb outpoints bucket"
 		return storeError(ErrDatabase, str, err)
 	}
 

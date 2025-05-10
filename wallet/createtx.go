@@ -36,9 +36,10 @@ func makeInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 	currentInputs := make([]*wire.TxIn, 0, len(eligible))
 	currentScripts := make([][]byte, 0, len(eligible))
 	currentInputValues := make([]ltcutil.Amount, 0, len(eligible))
+	currentMwebOutputs := make([]*wire.MwebOutput, 0, len(eligible))
 
 	return func(target ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn,
-		[]ltcutil.Amount, [][]byte, error) {
+		[]ltcutil.Amount, [][]byte, []*wire.MwebOutput, error) {
 
 		for currentTotal < target && len(eligible) != 0 {
 			nextCredit := &eligible[0]
@@ -48,8 +49,10 @@ func makeInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 			currentInputs = append(currentInputs, nextInput)
 			currentScripts = append(currentScripts, nextCredit.PkScript)
 			currentInputValues = append(currentInputValues, nextCredit.Amount)
+			currentMwebOutputs = append(currentMwebOutputs, nextCredit.MwebOutput)
 		}
-		return currentTotal, currentInputs, currentInputValues, currentScripts, nil
+		return currentTotal, currentInputs, currentInputValues,
+			currentScripts, currentMwebOutputs, nil
 	}
 }
 
@@ -92,6 +95,18 @@ func (s secretSource) GetScript(addr ltcutil.Address) ([]byte, error) {
 		return nil, e
 	}
 	return msa.Script()
+}
+
+func (s secretSource) GetScanKey(addr ltcutil.Address) (*btcec.PrivateKey, error) {
+	sm, account, err := s.AddrAccount(s.addrmgrNs, addr)
+	if err != nil {
+		return nil, err
+	}
+	props, err := sm.AccountProperties(s.addrmgrNs, account)
+	if err != nil {
+		return nil, err
+	}
+	return props.AccountScanKey.ECPrivKey()
 }
 
 // txToOutputs creates a signed transaction which includes each output from
@@ -139,12 +154,41 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			return err
 		}
 
+		allCanonical, allMweb := true, true
+		for _, txOut := range outputs {
+			if txscript.IsMweb(txOut.PkScript) {
+				allCanonical = false
+			} else {
+				allMweb = false
+			}
+		}
+
+		var eligibleCanonical, eligibleMweb []wtxmgr.Credit
+		for _, credit := range eligible {
+			if txscript.IsMweb(credit.PkScript) {
+				eligibleMweb = append(eligibleMweb, credit)
+			} else {
+				eligibleCanonical = append(eligibleCanonical, credit)
+			}
+		}
+
 		var inputSource txauthor.InputSource
 
 		switch coinSelectionStrategy {
 		// Pick largest outputs first.
 		case CoinSelectionLargest:
-			sort.Sort(sort.Reverse(byAmount(eligible)))
+			if allCanonical || allMweb {
+				sort.Sort(sort.Reverse(byAmount(eligibleCanonical)))
+				sort.Sort(sort.Reverse(byAmount(eligibleMweb)))
+			}
+			switch {
+			case allCanonical:
+				eligible = append(eligibleCanonical, eligibleMweb...)
+			case allMweb:
+				eligible = append(eligibleMweb, eligibleCanonical...)
+			default:
+				sort.Sort(sort.Reverse(byAmount(eligible)))
+			}
 			inputSource = makeInputSource(eligible)
 
 		// Select coins at random. This prevents the creation of ever
@@ -154,7 +198,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			// Skip inputs that do not raise the total transaction
 			// output value at the requested fee rate.
 			var positivelyYielding []wtxmgr.Credit
-			for _, output := range eligible {
+			for _, output := range eligibleCanonical {
 				output := output
 
 				if !inputYieldsPositively(&output, feeSatPerKb) {
@@ -166,10 +210,25 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 				)
 			}
 
-			rand.Shuffle(len(positivelyYielding), func(i, j int) {
-				positivelyYielding[i], positivelyYielding[j] =
-					positivelyYielding[j], positivelyYielding[i]
-			})
+			shuffle := func(arr []wtxmgr.Credit) {
+				rand.Shuffle(len(arr), func(i, j int) {
+					arr[i], arr[j] = arr[j], arr[i]
+				})
+			}
+
+			if allCanonical || allMweb {
+				shuffle(positivelyYielding)
+				shuffle(eligibleMweb)
+			}
+			switch {
+			case allCanonical:
+				positivelyYielding = append(positivelyYielding, eligibleMweb...)
+			case allMweb:
+				positivelyYielding = append(eligibleMweb, positivelyYielding...)
+			default:
+				positivelyYielding = append(positivelyYielding, eligibleMweb...)
+				shuffle(positivelyYielding)
+			}
 
 			inputSource = makeInputSource(positivelyYielding)
 		}
@@ -208,7 +267,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			// (NP2WKH, P2WKH, P2TR), so any key scope provided
 			// doesn't impact the result of this call.
 			watchOnly, err = w.Manager.IsWatchOnlyAccount(
-				addrmgrNs, waddrmgr.KeyScopeBIP0086, account,
+				addrmgrNs, waddrmgr.KeyScopeBIP0084, account,
 			)
 		} else {
 			watchOnly, err = w.Manager.IsWatchOnlyAccount(
@@ -219,9 +278,14 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 			return err
 		}
 		if !watchOnly {
-			err = tx.AddAllInputScripts(
-				secretSource{w.Manager, addrmgrNs},
-			)
+			secrets := secretSource{w.Manager, addrmgrNs}
+
+			err = tx.AddMweb(secrets, feeSatPerKb)
+			if err != nil {
+				return err
+			}
+
+			err = tx.AddAllInputScripts(secrets)
 			if err != nil {
 				return err
 			}
@@ -295,11 +359,8 @@ func (w *Wallet) findEligibleOutputs(dbtx walletdb.ReadTx,
 		if !confirmed(minconf, output.Height, bs.Height) {
 			continue
 		}
-		if output.FromCoinBase {
-			target := int32(w.chainParams.CoinbaseMaturity)
-			if !confirmed(target, output.Height, bs.Height) {
-				continue
-			}
+		if !output.IsMature(bs.Height, w.chainParams) {
+			continue
 		}
 
 		// Locked unspent outputs are skipped.
@@ -356,7 +417,7 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 	// Determine the address type for change addresses of the given
 	// account.
 	if changeKeyScope == nil {
-		changeKeyScope = &waddrmgr.KeyScopeBIP0086
+		changeKeyScope = &waddrmgr.KeyScopeBIP0084
 	}
 	addrType := waddrmgr.ScopeAddrMap[*changeKeyScope].InternalAddrType
 
@@ -388,7 +449,7 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 		scriptSize = txsizes.P2TRPkScriptSize
 	}
 
-	newChangeScript := func() ([]byte, error) {
+	newChangeScript := func(keyScope *waddrmgr.KeyScope) ([]byte, error) {
 		// Derive the change output script. As a hack to allow spending
 		// from the imported account, change addresses are created from
 		// account 0.
@@ -396,13 +457,16 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 			changeAddr ltcutil.Address
 			err        error
 		)
+		if keyScope == nil {
+			keyScope = changeKeyScope
+		}
 		if account == waddrmgr.ImportedAddrAccount {
 			changeAddr, err = w.newChangeAddress(
-				addrmgrNs, 0, *changeKeyScope,
+				addrmgrNs, 0, *keyScope,
 			)
 		} else {
 			changeAddr, err = w.newChangeAddress(
-				addrmgrNs, account, *changeKeyScope,
+				addrmgrNs, account, *keyScope,
 			)
 		}
 		if err != nil {

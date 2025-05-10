@@ -124,6 +124,7 @@ type TxRecord struct {
 	Hash         chainhash.Hash
 	Received     time.Time
 	SerializedTx []byte // Optional: may be nil
+	BroadcastTx  []byte // Optional: may be nil
 }
 
 // LockedOutput is a type that contains an outpoint of an UTXO and its lock
@@ -161,10 +162,15 @@ func NewTxRecordFromMsgTx(msgTx *wire.MsgTx, received time.Time) (*TxRecord, err
 		return nil, storeError(ErrInput, str, err)
 	}
 	rec := &TxRecord{
-		MsgTx:        *msgTx,
 		Received:     received,
 		SerializedTx: buf.Bytes(),
+		BroadcastTx:  buf.Bytes(),
 		Hash:         msgTx.TxHash(),
+	}
+	err = rec.MsgTx.Deserialize(buf)
+	if err != nil {
+		str := "failed to deserialize transaction"
+		return nil, storeError(ErrInput, str, err)
 	}
 
 	return rec, nil
@@ -178,8 +184,24 @@ type Credit struct {
 	BlockMeta
 	Amount       ltcutil.Amount
 	PkScript     []byte
+	MwebOutput   *wire.MwebOutput
 	Received     time.Time
 	FromCoinBase bool
+	IsMwebPegout bool
+}
+
+func (cred *Credit) IsMature(height int32, chainParams *chaincfg.Params) bool {
+	confirms := height - cred.Height + 1
+	if cred.Height < 0 {
+		confirms = 0
+	}
+	if cred.FromCoinBase && confirms < int32(chainParams.CoinbaseMaturity) {
+		return false
+	}
+	if cred.IsMwebPegout && confirms < int32(chainParams.MwebPegoutMaturity) {
+		return false
+	}
+	return true
 }
 
 // LockID represents a unique context-specific ID assigned to an output lock.
@@ -398,6 +420,52 @@ func (s *Store) RemoveUnminedTx(ns walletdb.ReadWriteBucket, rec *TxRecord) erro
 	return s.removeConflict(ns, rec)
 }
 
+// Store a mapping from an mweb output to its synthetic outpoint.
+func (s *Store) AddMwebOutpoint(ns walletdb.ReadWriteBucket,
+	outputId *chainhash.Hash, outpoint *wire.OutPoint) error {
+
+	return putMwebOutpoint(ns, outputId, outpoint)
+}
+
+// Get the synthetic outpoint for an mweb output if it exists.
+func (s *Store) GetMwebOutpoint(
+	ns walletdb.ReadBucket, outputId *chainhash.Hash) (
+	op *wire.OutPoint, rec *TxRecord, err error) {
+
+	op, err = existsMwebOutpoint(ns, outputId)
+	if err != nil || op == nil {
+		return
+	}
+	_, val := latestTxRecord(ns, &op.Hash)
+	if val == nil {
+		val = existsRawUnmined(ns, op.Hash[:])
+	}
+	if val != nil {
+		rec = &TxRecord{}
+		err = readRawTxRecord(&op.Hash, val, rec)
+	}
+	return
+}
+
+// Find the mweb output within the transaction that corresponds
+// to the synthetic outpoint.
+func (s *Store) GetMwebOutput(ns walletdb.ReadBucket,
+	op *wire.OutPoint, rec *TxRecord) (*wire.MwebOutput, error) {
+
+	if rec.MsgTx.Mweb != nil {
+		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+			outpoint, err := existsMwebOutpoint(ns, output.Hash())
+			if err != nil {
+				return nil, err
+			}
+			if outpoint != nil && *outpoint == *op {
+				return output, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
 // insertMinedTx inserts a new transaction record for a mined transaction into
 // the database under the confirmed bucket. It guarantees that, if the
 // tranasction was previously unconfirmed, then it will take care of cleaning up
@@ -602,7 +670,9 @@ func (s *Store) rollback(ns walletdb.ReadWriteBucket, height int32) error {
 			// not moved to the unconfirmed store.  A coinbase cannot
 			// contain any debits, but all credits should be removed
 			// and the mined balance decremented.
-			if blockchain.IsCoinBaseTx(&rec.MsgTx) {
+			if blockchain.IsCoinBaseTx(&rec.MsgTx) ||
+				blockchain.IsHogExTx(&rec.MsgTx) {
+
 				op := wire.OutPoint{Hash: rec.Hash}
 				for i, output := range rec.MsgTx.TxOut {
 					k, v := existsCredit(ns, &rec.Hash,
@@ -797,6 +867,10 @@ func (s *Store) rollback(ns walletdb.ReadWriteBucket, height int32) error {
 // UnspentOutputs returns all unspent received transaction outputs.
 // The order is undefined.
 func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
+	return s.UnspentOutputs2(ns, false)
+}
+
+func (s *Store) UnspentOutputs2(ns walletdb.ReadBucket, all bool) ([]Credit, error) {
 	var unspent []Credit
 
 	var op wire.OutPoint
@@ -813,7 +887,7 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			return nil
 		}
 
-		if existsRawUnminedInput(ns, k) != nil {
+		if existsRawUnminedInput(ns, k) != nil && !all {
 			// Output is spent by an unmined transaction.
 			// Skip this k/v pair.
 			return nil
@@ -847,6 +921,11 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			PkScript:     txOut.PkScript,
 			Received:     rec.Received,
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
+			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
+		}
+		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, rec)
+		if err != nil {
+			return err
 		}
 		unspent = append(unspent, cred)
 		return nil
@@ -870,7 +949,7 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			return nil
 		}
 
-		if existsRawUnminedInput(ns, k) != nil {
+		if existsRawUnminedInput(ns, k) != nil && !all {
 			// Output is spent by an unmined transaction.
 			// Skip to next unmined credit.
 			return nil
@@ -896,6 +975,11 @@ func (s *Store) UnspentOutputs(ns walletdb.ReadBucket) ([]Credit, error) {
 			PkScript:     txOut.PkScript,
 			Received:     rec.Received,
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
+			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
+		}
+		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, &rec)
+		if err != nil {
+			return err
 		}
 		unspent = append(unspent, cred)
 		return nil
@@ -1023,8 +1107,10 @@ func (s *Store) Balance(ns walletdb.ReadBucket, minConf int32, syncHeight int32)
 					continue
 				}
 				confs := syncHeight - block.Height + 1
-				if confs < minConf || (blockchain.IsCoinBaseTx(&rec.MsgTx) &&
-					confs < coinbaseMaturity) {
+				if confs < minConf ||
+					blockchain.IsCoinBaseTx(&rec.MsgTx) && confs < coinbaseMaturity ||
+					blockchain.IsHogExTx(&rec.MsgTx) &&
+						confs < int32(s.chainParams.MwebPegoutMaturity) {
 					bal -= amt
 				}
 			}

@@ -6,6 +6,9 @@
 package wtxmgr
 
 import (
+	"bytes"
+	"slices"
+
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/walletdb"
@@ -176,10 +179,34 @@ func (s *Store) UnminedTxs(ns walletdb.ReadBucket) ([]*wire.MsgTx, error) {
 
 	txSet := make(map[chainhash.Hash]*wire.MsgTx, len(recSet))
 	for txHash, txRec := range recSet {
-		txSet[txHash] = &txRec.MsgTx
+		var tx wire.MsgTx
+		err = tx.Deserialize(bytes.NewReader(txRec.BroadcastTx))
+		if err == nil {
+			txSet[txHash] = &tx
+		} else {
+			txSet[txHash] = &txRec.MsgTx
+		}
 	}
 
 	return DependencySort(txSet), nil
+}
+
+func (s *Store) UnminedTxRecords(ns walletdb.ReadBucket) ([]*TxRecord, error) {
+	recSet, err := s.unminedTxRecords(ns)
+	if err != nil {
+		return nil, err
+	}
+
+	recs := make([]*TxRecord, 0, len(recSet))
+	for _, rec := range recSet {
+		recs = append(recs, rec)
+	}
+
+	slices.SortFunc(recs, func(rec1, rec2 *TxRecord) int {
+		return rec1.Received.Compare(rec2.Received)
+	})
+
+	return recs, nil
 }
 
 func (s *Store) unminedTxRecords(ns walletdb.ReadBucket) (map[chainhash.Hash]*TxRecord, error) {

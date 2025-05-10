@@ -10,6 +10,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -380,7 +381,7 @@ func createOutputInfo(txOut *wire.TxOut,
 // NOTE: This method does NOT publish the transaction after it's been finalized
 // successfully.
 func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
-	packet *psbt.Packet) error {
+	mwebKeychain *mweb.Keychain, packet *psbt.Packet) error {
 
 	// Let's check that this is actually something we can and want to sign.
 	// We need at least one input and one output. In addition each
@@ -503,6 +504,23 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 		packet.Inputs[idx].FinalScriptSig = sigScript
 	}
 
+	if mwebKeychain != nil {
+		mwebInputSigner := psbt.BasicMwebInputSigner{
+			Keychain:           mwebKeychain,
+			LookupAddressIndex: psbt.NaiveAddressLookup,
+		}
+		psbtSigner, err := psbt.NewSigner(packet, mwebInputSigner)
+		if err != nil {
+			return fmt.Errorf("error creating PSBT signer: %v", err)
+		}
+		signOutcome, err := psbtSigner.SignMwebComponents()
+		if err != nil {
+			return fmt.Errorf("error during MWEB signing: %v", err)
+		} else if signOutcome != psbt.SignSuccesful {
+			return fmt.Errorf("mweb components not signed successfully")
+		}
+	}
+
 	// Make sure the PSBT itself thinks it's finalized and ready to be
 	// broadcast.
 	err = psbt.MaybeFinalizeAll(packet)
@@ -556,6 +574,7 @@ func constantInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 	currentInputs := make([]*wire.TxIn, 0, len(eligible))
 	currentScripts := make([][]byte, 0, len(eligible))
 	currentInputValues := make([]ltcutil.Amount, 0, len(eligible))
+	currentMwebOutputs := make([]*wire.MwebOutput, 0, len(eligible))
 
 	for _, credit := range eligible {
 		nextInput := wire.NewTxIn(&credit.OutPoint, nil, nil)
@@ -563,12 +582,13 @@ func constantInputSource(eligible []wtxmgr.Credit) txauthor.InputSource {
 		currentInputs = append(currentInputs, nextInput)
 		currentScripts = append(currentScripts, credit.PkScript)
 		currentInputValues = append(currentInputValues, credit.Amount)
+		currentMwebOutputs = append(currentMwebOutputs, credit.MwebOutput)
 	}
 
 	return func(target ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn,
-		[]ltcutil.Amount, [][]byte, error) {
+		[]ltcutil.Amount, [][]byte, []*wire.MwebOutput, error) {
 
 		return currentTotal, currentInputs, currentInputValues,
-			currentScripts, nil
+			currentScripts, currentMwebOutputs, nil
 	}
 }

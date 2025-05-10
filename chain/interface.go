@@ -5,6 +5,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
@@ -106,6 +107,12 @@ type (
 	RelevantTx struct {
 		TxRecord *wtxmgr.TxRecord
 		Block    *wtxmgr.BlockMeta // nil if unmined
+	}
+
+	// MwebUtxos is a notification of new MWEB utxos.
+	MwebUtxos struct {
+		Leafset *mweb.Leafset
+		Utxos   []*wire.MwebNetUtxo
 	}
 
 	// RescanProgress is a notification describing the current status

@@ -692,6 +692,8 @@ func getNewAddress(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 			keyScope = waddrmgr.KeyScopeBIP0049Plus
 		case "bech32":
 			keyScope = waddrmgr.KeyScopeBIP0084
+		case "mweb":
+			keyScope = waddrmgr.KeyScopeMweb
 		case "legacy": // default if unset
 		default:
 			return nil, &ErrAddressTypeUnknown
@@ -1391,7 +1393,7 @@ func sendPairs(w *wallet.Wallet, amounts map[string]ltcutil.Amount,
 		return "", err
 	}
 	tx, err := w.SendOutputs(
-		outputs, &keyScope, account, minconf, feeSatPerKb,
+		outputs, nil, account, minconf, feeSatPerKb,
 		wallet.CoinSelectionLargest, "",
 	)
 	if err != nil {

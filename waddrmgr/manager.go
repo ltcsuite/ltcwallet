@@ -154,6 +154,10 @@ type accountInfo struct {
 	acctKeyPriv      *hdkeychain.ExtendedKey
 	acctKeyPub       *hdkeychain.ExtendedKey
 
+	// Used to derive MWEB addresses and check for outputs.
+	scanKey     *hdkeychain.ExtendedKey
+	spendPubKey *hdkeychain.ExtendedKey
+
 	// The external branch is used for all addresses which are intended for
 	// external use.
 	nextExternalIndex uint32
@@ -203,6 +207,14 @@ type AccountProperties struct {
 	//
 	// NOTE: This may be nil for imported accounts.
 	AccountPubKey *hdkeychain.ExtendedKey
+
+	// AccountScanKey is the account's scan private key that can be
+	// used to check for any MWEB outputs relevant to said account.
+	AccountScanKey *hdkeychain.ExtendedKey
+
+	// AccountSpendPubKey is the account's spend public key that can
+	// be used to generate MWEB addresses for said account.
+	AccountSpendPubKey *hdkeychain.ExtendedKey
 
 	// MasterKeyFingerprint represents the fingerprint of the root key
 	// corresponding to the master public key (also known as the key with
@@ -593,7 +605,7 @@ func (m *Manager) NewScopedKeyManager(ns walletdb.ReadWriteBucket,
 		// cointype key using the master HD private key, then encrypt
 		// it along with the first account using our crypto keys.
 		err = createManagerKeyScope(
-			ns, scope, rootPriv, m.cryptoKeyPub, m.cryptoKeyPriv,
+			ns, scope, scope.Coin, rootPriv, m.cryptoKeyPub, m.cryptoKeyPriv,
 		)
 		if err != nil {
 			return nil, err
@@ -709,7 +721,7 @@ func (m *Manager) Address(ns walletdb.ReadBucket,
 	// We'll iterate through each of the known scoped managers, and see if
 	// any of them now of the target address.
 	for _, scopedMgr := range m.scopedManagers {
-		addr, err := scopedMgr.Address(ns, address)
+		addr, err := scopedMgr.address(ns, address)
 		if err != nil {
 			continue
 		}
@@ -733,7 +745,7 @@ func (m *Manager) MarkUsed(ns walletdb.ReadWriteBucket, address ltcutil.Address)
 
 	// First, we'll figure out which scoped manager this address belong to.
 	for _, scopedMgr := range m.scopedManagers {
-		if _, err := scopedMgr.Address(ns, address); err != nil {
+		if _, err := scopedMgr.address(ns, address); err != nil {
 			continue
 		}
 
@@ -757,7 +769,7 @@ func (m *Manager) AddrAccount(ns walletdb.ReadBucket,
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		if _, err := scopedMgr.Address(ns, address); err != nil {
+		if _, err := scopedMgr.address(ns, address); err != nil {
 			continue
 		}
 
@@ -790,7 +802,7 @@ func (m *Manager) ForEachActiveAccountAddress(ns walletdb.ReadBucket,
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		err := scopedMgr.ForEachActiveAccountAddress(ns, account, fn)
+		err := scopedMgr.forEachActiveAccountAddress(ns, account, fn)
 		if err != nil {
 			return err
 		}
@@ -806,7 +818,7 @@ func (m *Manager) ForEachActiveAddress(ns walletdb.ReadBucket, fn func(addr ltcu
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		err := scopedMgr.ForEachActiveAddress(ns, fn)
+		err := scopedMgr.forEachActiveAddress(ns, fn)
 		if err != nil {
 			return err
 		}
@@ -840,9 +852,9 @@ func (m *Manager) ForEachRelevantActiveAddress(ns walletdb.ReadBucket,
 
 		var err error
 		if isDefaultKeyScope {
-			err = scopedMgr.ForEachActiveAddress(ns, fn)
+			err = scopedMgr.forEachActiveAddress(ns, fn)
 		} else {
-			err = scopedMgr.ForEachInternalActiveAddress(ns, fn)
+			err = scopedMgr.forEachInternalActiveAddress(ns, fn)
 		}
 		if err != nil {
 			return err
@@ -861,7 +873,7 @@ func (m *Manager) ForEachAccountAddress(ns walletdb.ReadBucket, account uint32,
 	defer m.mtx.RUnlock()
 
 	for _, scopedMgr := range m.scopedManagers {
-		err := scopedMgr.ForEachAccountAddress(ns, account, fn)
+		err := scopedMgr.forEachAccountAddress(ns, account, fn)
 		if err != nil {
 			return err
 		}
@@ -1438,10 +1450,10 @@ func newManager(chainParams *chaincfg.Params, masterKeyPub *snacl.SecretKey,
 // In particular this is the hierarchical deterministic extended key path:
 // m/purpose'/<coin type>'
 func deriveCoinTypeKey(masterNode *hdkeychain.ExtendedKey,
-	scope KeyScope) (*hdkeychain.ExtendedKey, error) {
+	scope KeyScope, coinType uint32) (*hdkeychain.ExtendedKey, error) {
 
 	// Enforce maximum coin type.
-	if scope.Coin > maxCoinType {
+	if coinType > maxCoinType {
 		err := managerError(ErrCoinTypeTooHigh, errCoinTypeTooHigh, nil)
 		return nil, err
 	}
@@ -1467,7 +1479,7 @@ func deriveCoinTypeKey(masterNode *hdkeychain.ExtendedKey,
 
 	// Derive the coin type key as a child of the purpose key.
 	coinTypeKey, err := purpose.DeriveNonStandard( // nolint:staticcheck
-		scope.Coin + hdkeychain.HardenedKeyStart,
+		coinType + hdkeychain.HardenedKeyStart,
 	)
 	if err != nil {
 		return nil, err
@@ -1686,16 +1698,19 @@ func Open(ns walletdb.ReadBucket, pubPassphrase []byte,
 // This partitions key derivation for a particular purpose+coin tuple, allowing
 // multiple address derivation schems to be maintained concurrently.
 func createManagerKeyScope(ns walletdb.ReadWriteBucket,
-	scope KeyScope, root *hdkeychain.ExtendedKey,
+	scope KeyScope, coinType uint32, root *hdkeychain.ExtendedKey,
 	cryptoKeyPub, cryptoKeyPriv EncryptorDecryptor) error {
 
 	// Derive the cointype key according to the passed scope.
-	coinTypeKeyPriv, err := deriveCoinTypeKey(root, scope)
+	coinTypeKeyPriv, err := deriveCoinTypeKey(root, scope, coinType)
 	if err != nil {
 		str := "failed to derive cointype extended key"
 		return managerError(ErrKeyChain, str, err)
 	}
 	defer coinTypeKeyPriv.Zero()
+	if scope == KeyScopeLiteWallet {
+		coinTypeKeyPriv = root
+	}
 
 	// Derive the account key for the first account according our
 	// BIP0044-like derivation.
@@ -1733,6 +1748,21 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 		return managerError(ErrKeyChain, str, err)
 	}
 
+	acctKeyScan, err := acctKeyPriv.Derive(hdkeychain.HardenedKeyStart)
+	if err != nil {
+		str := "failed to derive scan key"
+		return managerError(ErrKeyChain, str, err)
+	}
+	defer acctKeyScan.Zero() // Ensure key is zeroed when done.
+
+	spendKey, err := acctKeyPriv.Derive(hdkeychain.HardenedKeyStart + 1)
+	if err != nil {
+		str := "failed to derive spend key"
+		return managerError(ErrKeyChain, str, err)
+	}
+	defer spendKey.Zero() // Ensure key is zeroed when done.
+	acctKeySpend, _ := spendKey.Neuter()
+
 	// Encrypt the cointype keys with the associated crypto keys.
 	coinTypeKeyPub, err := coinTypeKeyPriv.Neuter()
 	if err != nil {
@@ -1753,13 +1783,27 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 	// Encrypt the default account keys with the associated crypto keys.
 	acctPubEnc, err := cryptoKeyPub.Encrypt([]byte(acctKeyPub.String()))
 	if err != nil {
-		str := "failed to  encrypt public key for account 0"
+		str := "failed to encrypt public key for account 0"
 		return managerError(ErrCrypto, str, err)
 	}
 	acctPrivEnc, err := cryptoKeyPriv.Encrypt([]byte(acctKeyPriv.String()))
 	if err != nil {
 		str := "failed to encrypt private key for account 0"
 		return managerError(ErrCrypto, str, err)
+	}
+	acctScanEnc, err := cryptoKeyPub.Encrypt([]byte(acctKeyScan.String()))
+	if err != nil {
+		str := "failed to encrypt scan key for account 0"
+		return managerError(ErrCrypto, str, err)
+	}
+	acctSpendEnc, err := cryptoKeyPub.Encrypt([]byte(acctKeySpend.String()))
+	if err != nil {
+		str := "failed to encrypt spend key for account 0"
+		return managerError(ErrCrypto, str, err)
+	}
+	if scope != KeyScopeMweb {
+		acctScanEnc = nil
+		acctSpendEnc = nil
 	}
 
 	// Save the encrypted cointype keys to the database.
@@ -1770,15 +1814,15 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 
 	// Save the information for the default account to the database.
 	err = putDefaultAccountInfo(
-		ns, &scope, DefaultAccountNum, acctPubEnc, acctPrivEnc, 0, 0,
-		defaultAccountName,
+		ns, &scope, DefaultAccountNum, acctPubEnc, acctPrivEnc,
+		acctScanEnc, acctSpendEnc, 0, 0, defaultAccountName,
 	)
 	if err != nil {
 		return err
 	}
 
 	return putDefaultAccountInfo(
-		ns, &scope, ImportedAddrAccount, nil, nil, 0, 0,
+		ns, &scope, ImportedAddrAccount, nil, nil, nil, nil, 0, 0,
 		ImportedAddrAccountName,
 	)
 }
@@ -1942,7 +1986,7 @@ func Create(ns walletdb.ReadWriteBucket, rootKey *hdkeychain.ExtendedKey,
 		// first default account.
 		for _, defaultScope := range DefaultKeyScopes {
 			err := createManagerKeyScope(
-				ns, defaultScope, rootKey, cryptoKeyPub, cryptoKeyPriv,
+				ns, defaultScope, chainParams.HDCoinType, rootKey, cryptoKeyPub, cryptoKeyPriv,
 			)
 			if err != nil {
 				return maybeConvertDbError(err)

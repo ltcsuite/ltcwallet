@@ -69,6 +69,13 @@ func (m *Manager) SetSyncedTo(ns walletdb.ReadWriteBucket, bs *BlockStamp) error
 	return nil
 }
 
+func (m *Manager) SetSyncedToCached(bs BlockStamp) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	m.syncState.syncedTo = bs
+}
+
 // SyncedTo returns details about the block height and hash that the address
 // manager is synced through at the very least.  The intention is that callers
 // can use this information for intelligently initiating rescans to sync back to

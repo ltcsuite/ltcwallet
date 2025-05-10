@@ -15,6 +15,7 @@ import (
 	"github.com/ltcsuite/ltcd/btcec/v2/schnorr"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/walletdb"
@@ -80,6 +81,9 @@ const (
 	// TaprootScript represents a p2tr (pay-to-taproot) address type that
 	// commits to a script and not just a single key.
 	TaprootScript
+
+	// Mweb represents an MWEB address.
+	Mweb
 )
 
 const (
@@ -170,7 +174,7 @@ type ValidatableManagedAddress interface {
 	//
 	//  3. We're able to generate a valid ECDSA/Schnorr signature based on
 	//  the passed private key validated against the internal public key.
-	Validate(msg [32]byte, priv *btcec.PrivateKey) error
+	Validate(msg [32]byte, priv, scan *btcec.PrivateKey) error
 }
 
 // ManagedScriptAddress extends ManagedAddress and represents a pay-to-script-hash
@@ -294,6 +298,8 @@ func (a *managedAddress) AddrHash() []byte {
 		hash = n.Hash160()[:]
 	case *ltcutil.AddressTaproot:
 		hash = n.WitnessProgram()
+	case *ltcutil.AddressMweb:
+		hash = ltcutil.Hash160(n.ScriptAddress())
 	}
 
 	return hash
@@ -326,7 +332,7 @@ func (a *managedAddress) Compressed() bool {
 //
 // This is part of the ManagedAddress interface implementation.
 func (a *managedAddress) Used(ns walletdb.ReadBucket) bool {
-	return a.manager.fetchUsed(ns, a.AddrHash())
+	return a.manager.fetchUsed(ns, a.address.ScriptAddress())
 }
 
 // PubKey returns the public key associated with the address.
@@ -361,18 +367,21 @@ func (a *managedAddress) ExportPubKey() string {
 //
 // This is part of the ManagedPubKeyAddress interface implementation.
 func (a *managedAddress) PrivKey() (*btcec.PrivateKey, error) {
+	a.manager.rootManager.mtx.RLock()
+	defer a.manager.rootManager.mtx.RUnlock()
+
 	// No private keys are available for a watching-only address manager.
-	if a.manager.rootManager.WatchOnly() {
+	if a.manager.rootManager.watchOnly() {
 		return nil, managerError(ErrWatchingOnly, errWatchingOnly, nil)
+	}
+
+	// Account manager must be unlocked to decrypt the private key.
+	if a.manager.rootManager.isLocked() {
+		return nil, managerError(ErrLocked, errLocked, nil)
 	}
 
 	a.manager.mtx.Lock()
 	defer a.manager.mtx.Unlock()
-
-	// Account manager must be unlocked to decrypt the private key.
-	if a.manager.rootManager.IsLocked() {
-		return nil, managerError(ErrLocked, errLocked, nil)
-	}
 
 	// Decrypt the key as needed.  Also, make sure it's a copy since the
 	// private key stored in memory can be cleared at any time.  Otherwise
@@ -439,7 +448,9 @@ type signature interface {
 //     the passed private key validated against the internal public key.
 //
 // NOTE: This is part of the ValidatableManagedAddress interface .
-func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
+func (a *managedAddress) Validate(msg [32]byte,
+	priv, scan *btcec.PrivateKey) error {
+
 	// First, we'll obtain the mapping public key from the target private
 	// key. This key should match up with the public key we store
 	// internally.
@@ -460,7 +471,7 @@ func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
 	// This can potentially catch a hardware/software error when mapping
 	// the public key to a Bitcoin address.
 	addr, err := newManagedAddressWithoutPrivKey(
-		a.manager, a.derivationPath, a.pubKey, a.compressed, a.addrType,
+		a.manager, a.derivationPath, a.pubKey, scan, a.compressed, a.addrType,
 	)
 	if err != nil {
 		return fmt.Errorf("unable to re-create addr: %w", err)
@@ -483,7 +494,7 @@ func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
 	switch a.addrType {
 	// For the "legacy" addr types, we'll generate an ECDSA signature to
 	// verify against.
-	case NestedWitnessPubKey, PubKeyHash, WitnessPubKey:
+	case NestedWitnessPubKey, PubKeyHash, WitnessPubKey, Mweb:
 		sig = ecdsa.Sign(addrPrivKey, msg[:])
 
 	// For the newer taproot addr type, we'll generate a schnorr signature
@@ -511,7 +522,8 @@ func (a *managedAddress) Validate(msg [32]byte, priv *btcec.PrivateKey) error {
 // passed account, public key, and whether or not the public key should be
 // compressed.
 func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
-	derivationPath DerivationPath, pubKey *btcec.PublicKey, compressed bool,
+	derivationPath DerivationPath, pubKey *btcec.PublicKey,
+	scanKey *btcec.PrivateKey, compressed bool,
 	addrType AddressType) (*managedAddress, error) {
 
 	// Create a pay-to-pubkey-hash address from the public key.
@@ -583,6 +595,18 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 		if err != nil {
 			return nil, err
 		}
+
+	case Mweb:
+		scanSecret := scanKey.Serialize()
+		defer zero.Bytes(scanSecret)
+		spendPubKey := (*mw.PublicKey)(pubKey.SerializeCompressed())
+		address = ltcutil.NewAddressMweb(
+			&mw.StealthAddress{
+				Scan:  spendPubKey.Mul((*mw.SecretKey)(scanSecret)),
+				Spend: spendPubKey,
+			},
+			m.rootManager.chainParams,
+		)
 	}
 
 	return &managedAddress{
@@ -603,7 +627,7 @@ func newManagedAddressWithoutPrivKey(m *ScopedKeyManager,
 // private key, and whether or not the public key is compressed.  The managed
 // address will have access to the private and public keys.
 func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
-	privKey *btcec.PrivateKey, compressed bool,
+	privKey, scanKey *btcec.PrivateKey, compressed bool,
 	addrType AddressType, acctInfo *accountInfo) (*managedAddress, error) {
 
 	// Encrypt the private key.
@@ -621,7 +645,7 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 	// and then add the private key to it.
 	ecPubKey := privKey.PubKey()
 	managedAddr, err := newManagedAddressWithoutPrivKey(
-		s, derivationPath, ecPubKey, compressed, addrType,
+		s, derivationPath, ecPubKey, scanKey, compressed, addrType,
 	)
 	if err != nil {
 		return nil, err
@@ -641,7 +665,7 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 
 	// We'll first validate things against the private key we got
 	// from the original derivation.
-	err = managedAddr.Validate(msg, privKey)
+	err = managedAddr.Validate(msg, privKey, scanKey)
 	if err != nil {
 		return nil, fmt.Errorf("addr validation for addr=%v "+
 			"failed: %w", managedAddr.address, err)
@@ -668,7 +692,7 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 	if err != nil {
 		return nil, fmt.Errorf("unable to gen priv key: %w", err)
 	}
-	err = managedAddr.Validate(msg, freshPrivKey)
+	err = managedAddr.Validate(msg, freshPrivKey, scanKey)
 	if err != nil {
 		return nil, fmt.Errorf("addr validation for addr=%v "+
 			"failed after rederiving: %w",
@@ -684,11 +708,19 @@ func newManagedAddress(s *ScopedKeyManager, derivationPath DerivationPath,
 // will only have access to the public key.
 func newManagedAddressFromExtKey(s *ScopedKeyManager,
 	derivationPath DerivationPath, key *hdkeychain.ExtendedKey,
-	addrType AddressType, acctInfo *accountInfo) (*managedAddress, error) {
+	addrType AddressType, acctInfo *accountInfo) (
+	managedAddr *managedAddress, err error) {
+
+	var scanPrivKey *btcec.PrivateKey
+	if acctInfo.scanKey != nil {
+		scanPrivKey, err = acctInfo.scanKey.ECPrivKey()
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// Create a new managed address based on the public or private key
 	// depending on whether the generated key is private.
-	var managedAddr *managedAddress
 	if key.IsPrivate() {
 		privKey, err := key.ECPrivKey()
 		if err != nil {
@@ -698,7 +730,7 @@ func newManagedAddressFromExtKey(s *ScopedKeyManager,
 		// Ensure the temp private key big integer is cleared after
 		// use.
 		managedAddr, err = newManagedAddress(
-			s, derivationPath, privKey, true, addrType, acctInfo,
+			s, derivationPath, privKey, scanPrivKey, true, addrType, acctInfo,
 		)
 		if err != nil {
 			return nil, err
@@ -710,7 +742,7 @@ func newManagedAddressFromExtKey(s *ScopedKeyManager,
 		}
 
 		managedAddr, err = newManagedAddressWithoutPrivKey(
-			s, derivationPath, pubKey, true,
+			s, derivationPath, pubKey, scanPrivKey, true,
 			addrType,
 		)
 		if err != nil {
@@ -854,18 +886,21 @@ func (a *scriptAddress) Used(ns walletdb.ReadBucket) bool {
 //
 // This is part of the ManagedAddress interface implementation.
 func (a *scriptAddress) Script() ([]byte, error) {
+	a.manager.rootManager.mtx.RLock()
+	defer a.manager.rootManager.mtx.RUnlock()
+
 	// No script is available for a watching-only address manager.
-	if a.manager.rootManager.WatchOnly() {
+	if a.manager.rootManager.watchOnly() {
 		return nil, managerError(ErrWatchingOnly, errWatchingOnly, nil)
+	}
+
+	// Account manager must be unlocked to decrypt the script.
+	if a.manager.rootManager.isLocked() {
+		return nil, managerError(ErrLocked, errLocked, nil)
 	}
 
 	a.manager.mtx.Lock()
 	defer a.manager.mtx.Unlock()
-
-	// Account manager must be unlocked to decrypt the script.
-	if a.manager.rootManager.IsLocked() {
-		return nil, managerError(ErrLocked, errLocked, nil)
-	}
 
 	// Decrypt the script as needed.  Also, make sure it's a copy since the
 	// script stored in memory can be cleared at any time.  Otherwise,
@@ -952,18 +987,21 @@ func (a *witnessScriptAddress) Used(ns walletdb.ReadBucket) bool {
 //
 // This is part of the ManagedAddress interface implementation.
 func (a *witnessScriptAddress) Script() ([]byte, error) {
+	a.manager.rootManager.mtx.RLock()
+	defer a.manager.rootManager.mtx.RUnlock()
+
 	// No script is available for a watching-only address manager.
-	if a.isSecretScript && a.manager.rootManager.WatchOnly() {
+	if a.isSecretScript && a.manager.rootManager.watchOnly() {
 		return nil, managerError(ErrWatchingOnly, errWatchingOnly, nil)
+	}
+
+	// Account manager must be unlocked to decrypt the script.
+	if a.isSecretScript && a.manager.rootManager.isLocked() {
+		return nil, managerError(ErrLocked, errLocked, nil)
 	}
 
 	a.manager.mtx.Lock()
 	defer a.manager.mtx.Unlock()
-
-	// Account manager must be unlocked to decrypt the script.
-	if a.isSecretScript && a.manager.rootManager.IsLocked() {
-		return nil, managerError(ErrLocked, errLocked, nil)
-	}
 
 	cryptoKey := a.manager.rootManager.cryptoKeyScript
 	if !a.isSecretScript {

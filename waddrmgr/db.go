@@ -104,11 +104,13 @@ type dbAccountRow struct {
 // BIP0044-like account in the database.
 type dbDefaultAccountRow struct {
 	dbAccountRow
-	pubKeyEncrypted   []byte
-	privKeyEncrypted  []byte
-	nextExternalIndex uint32
-	nextInternalIndex uint32
-	name              string
+	pubKeyEncrypted      []byte
+	privKeyEncrypted     []byte
+	scanKeyEncrypted     []byte
+	spendPubKeyEncrypted []byte
+	nextExternalIndex    uint32
+	nextInternalIndex    uint32
+	name                 string
 }
 
 // dbWatchOnlyAccountRow houses additional information stored about a watch-only
@@ -746,16 +748,20 @@ func serializeAccountRow(row *dbAccountRow) []byte {
 // account row as a BIP0044-like account.
 func deserializeDefaultAccountRow(accountID []byte, row *dbAccountRow) (*dbDefaultAccountRow, error) {
 	// The serialized BIP0044 account raw data format is:
-	//   <encpubkeylen><encpubkey><encprivkeylen><encprivkey><nextextidx>
-	//   <nextintidx><namelen><name>
+	//   <encpubkeylen><encpubkey><encprivkeylen><encprivkey>
+	//   <encscankeylen><encscankey><encspendpubkeylen><encspendpubkey>
+	//   <nextextidx><nextintidx><namelen><name>
 	//
-	// 4 bytes encrypted pubkey len + encrypted pubkey + 4 bytes encrypted
-	// privkey len + encrypted privkey + 4 bytes next external index +
+	// 4 bytes encrypted pubkey len + encrypted pubkey +
+	// 4 bytes encrypted privkey len + encrypted privkey +
+	// 4 bytes encrypted scankey len + encrypted scankey +
+	// 4 bytes encrypted spendpubkey len + encrypted spendpubkey +
+	// 4 bytes next external index +
 	// 4 bytes next internal index + 4 bytes name len + name
 
 	// Given the above, the length of the entry must be at a minimum
 	// the constant value sizes.
-	if len(row.rawData) < 20 {
+	if len(row.rawData) < 28 {
 		str := fmt.Sprintf("malformed serialized bip0044 account for "+
 			"key %x", accountID)
 		return nil, managerError(ErrDatabase, str, nil)
@@ -774,6 +780,16 @@ func deserializeDefaultAccountRow(accountID []byte, row *dbAccountRow) (*dbDefau
 	retRow.privKeyEncrypted = make([]byte, privLen)
 	copy(retRow.privKeyEncrypted, row.rawData[offset:offset+privLen])
 	offset += privLen
+	scanLen := binary.LittleEndian.Uint32(row.rawData[offset : offset+4])
+	offset += 4
+	retRow.scanKeyEncrypted = make([]byte, scanLen)
+	copy(retRow.scanKeyEncrypted, row.rawData[offset:offset+scanLen])
+	offset += scanLen
+	spendLen := binary.LittleEndian.Uint32(row.rawData[offset : offset+4])
+	offset += 4
+	retRow.spendPubKeyEncrypted = make([]byte, spendLen)
+	copy(retRow.spendPubKeyEncrypted, row.rawData[offset:offset+spendLen])
+	offset += spendLen
 	retRow.nextExternalIndex = binary.LittleEndian.Uint32(row.rawData[offset : offset+4])
 	offset += 4
 	retRow.nextInternalIndex = binary.LittleEndian.Uint32(row.rawData[offset : offset+4])
@@ -787,20 +803,27 @@ func deserializeDefaultAccountRow(accountID []byte, row *dbAccountRow) (*dbDefau
 
 // serializeDefaultAccountRow returns the serialization of the raw data field
 // for a BIP0044-like account.
-func serializeDefaultAccountRow(encryptedPubKey, encryptedPrivKey []byte,
+func serializeDefaultAccountRow(encryptedPubKey, encryptedPrivKey,
+	encryptedScanKey, encryptedSpendPubKey []byte,
 	nextExternalIndex, nextInternalIndex uint32, name string) []byte {
 
 	// The serialized BIP0044 account raw data format is:
-	//   <encpubkeylen><encpubkey><encprivkeylen><encprivkey><nextextidx>
-	//   <nextintidx><namelen><name>
+	//   <encpubkeylen><encpubkey><encprivkeylen><encprivkey>
+	//   <encscankeylen><encscankey><encspendpubkeylen><encspendpubkey>
+	//   <nextextidx><nextintidx><namelen><name>
 	//
-	// 4 bytes encrypted pubkey len + encrypted pubkey + 4 bytes encrypted
-	// privkey len + encrypted privkey + 4 bytes next external index +
+	// 4 bytes encrypted pubkey len + encrypted pubkey +
+	// 4 bytes encrypted privkey len + encrypted privkey +
+	// 4 bytes encrypted scankey len + encrypted scankey +
+	// 4 bytes encrypted spendpubkey len + encrypted spendpubkey +
+	// 4 bytes next external index +
 	// 4 bytes next internal index + 4 bytes name len + name
 	pubLen := uint32(len(encryptedPubKey))
 	privLen := uint32(len(encryptedPrivKey))
+	scanLen := uint32(len(encryptedScanKey))
+	spendLen := uint32(len(encryptedSpendPubKey))
 	nameLen := uint32(len(name))
-	rawData := make([]byte, 20+pubLen+privLen+nameLen)
+	rawData := make([]byte, 28+pubLen+privLen+scanLen+spendLen+nameLen)
 	binary.LittleEndian.PutUint32(rawData[0:4], pubLen)
 	copy(rawData[4:4+pubLen], encryptedPubKey)
 	offset := 4 + pubLen
@@ -808,6 +831,14 @@ func serializeDefaultAccountRow(encryptedPubKey, encryptedPrivKey []byte,
 	offset += 4
 	copy(rawData[offset:offset+privLen], encryptedPrivKey)
 	offset += privLen
+	binary.LittleEndian.PutUint32(rawData[offset:offset+4], scanLen)
+	offset += 4
+	copy(rawData[offset:offset+scanLen], encryptedScanKey)
+	offset += scanLen
+	binary.LittleEndian.PutUint32(rawData[offset:offset+4], spendLen)
+	offset += 4
+	copy(rawData[offset:offset+spendLen], encryptedSpendPubKey)
+	offset += spendLen
 	binary.LittleEndian.PutUint32(rawData[offset:offset+4], nextExternalIndex)
 	offset += 4
 	binary.LittleEndian.PutUint32(rawData[offset:offset+4], nextInternalIndex)
@@ -1254,12 +1285,14 @@ func putAccountRow(ns walletdb.ReadWriteBucket, scope *KeyScope,
 // putDefaultAccountInfo stores the provided default account information to the
 // database.
 func putDefaultAccountInfo(ns walletdb.ReadWriteBucket, scope *KeyScope,
-	account uint32, encryptedPubKey, encryptedPrivKey []byte,
+	account uint32, encryptedPubKey, encryptedPrivKey,
+	encryptedScanKey, encryptedSpendPubKey []byte,
 	nextExternalIndex, nextInternalIndex uint32, name string) error {
 
 	rawData := serializeDefaultAccountRow(
-		encryptedPubKey, encryptedPrivKey, nextExternalIndex,
-		nextInternalIndex, name,
+		encryptedPubKey, encryptedPrivKey,
+		encryptedScanKey, encryptedSpendPubKey,
+		nextExternalIndex, nextInternalIndex, name,
 	)
 
 	// TODO(roasbeef): pass scope bucket directly??
@@ -1767,6 +1800,7 @@ func putChainedAddress(ns walletdb.ReadWriteBucket, scope *KeyScope,
 		// Reserialize the account with the updated index and store it.
 		row.rawData = serializeDefaultAccountRow(
 			arow.pubKeyEncrypted, arow.privKeyEncrypted,
+			arow.scanKeyEncrypted, arow.spendPubKeyEncrypted,
 			nextExternalIndex, nextInternalIndex, arow.name,
 		)
 
@@ -2065,6 +2099,7 @@ func deletePrivateKeys(ns walletdb.ReadWriteBucket) error {
 				// store it.
 				row.rawData = serializeDefaultAccountRow(
 					arow.pubKeyEncrypted, nil,
+					arow.scanKeyEncrypted, arow.spendPubKeyEncrypted,
 					arow.nextExternalIndex, arow.nextInternalIndex,
 					arow.name,
 				)
@@ -2398,9 +2433,10 @@ func putBirthday(ns walletdb.ReadWriteBucket, t time.Time) error {
 // FetchBirthdayBlock retrieves the birthday block from the database.
 //
 // The block is serialized as follows:
-//   [0:4]   block height
-//   [4:36]  block hash
-//   [36:44] block timestamp
+//
+//	[0:4]   block height
+//	[4:36]  block hash
+//	[36:44] block timestamp
 func FetchBirthdayBlock(ns walletdb.ReadBucket) (BlockStamp, error) {
 	var block BlockStamp
 
@@ -2438,9 +2474,10 @@ func DeleteBirthdayBlock(ns walletdb.ReadWriteBucket) error {
 // PutBirthdayBlock stores the provided birthday block to the database.
 //
 // The block is serialized as follows:
-//   [0:4]   block height
-//   [4:36]  block hash
-//   [36:44] block timestamp
+//
+//	[0:4]   block height
+//	[4:36]  block hash
+//	[36:44] block timestamp
 //
 // NOTE: This does not alter the birthday block verification state.
 func PutBirthdayBlock(ns walletdb.ReadWriteBucket, block BlockStamp) error {

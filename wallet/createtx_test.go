@@ -351,8 +351,8 @@ func TestCreateSimpleCustomChange(t *testing.T) {
 		PkScript: p2trScript,
 	}
 	tx1, err := w.txToOutputs(
-		[]*wire.TxOut{targetTxOut}, nil, nil, 0, 1, 1000,
-		CoinSelectionLargest, true,
+		[]*wire.TxOut{targetTxOut}, nil, &waddrmgr.KeyScopeBIP0086,
+		0, 1, 1000, CoinSelectionLargest, true,
 	)
 	require.NoError(t, err)
 

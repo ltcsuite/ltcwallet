@@ -18,6 +18,7 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/internal/cfgutil"
 	"github.com/ltcsuite/ltcwallet/netparams"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
 	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
@@ -181,8 +182,9 @@ func makeInputSource(outputs []btcjson.ListUnspentResult) txauthor.InputSource {
 		sourceErr = noInputValue{}
 	}
 
-	return func(ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn, []ltcutil.Amount, [][]byte, error) {
-		return totalInputValue, inputs, inputValues, nil, sourceErr
+	return func(ltcutil.Amount) (ltcutil.Amount, []*wire.TxIn,
+		[]ltcutil.Amount, [][]byte, []*wire.MwebOutput, error) {
+		return totalInputValue, inputs, inputValues, nil, nil, sourceErr
 	}
 }
 
@@ -193,7 +195,7 @@ func makeDestinationScriptSource(rpcClient *rpcclient.Client, accountName string
 
 	// GetNewAddress always returns a P2PKH address since it assumes
 	// BIP-0044.
-	newChangeScript := func() ([]byte, error) {
+	newChangeScript := func(*waddrmgr.KeyScope) ([]byte, error) {
 		destinationAddress, err := rpcClient.GetNewAddress(accountName)
 		if err != nil {
 			return nil, err

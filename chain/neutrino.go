@@ -9,8 +9,8 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
-	"github.com/ltcsuite/ltcd/ltcutil/gcs"
 	"github.com/ltcsuite/ltcd/ltcutil/gcs/builder"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -241,12 +241,8 @@ func (s *NeutrinoClient) FilterBlocks(
 	// the filter returns a positive match, the full block is then requested
 	// and scanned for addresses using the block filterer.
 	for i, blk := range req.Blocks {
-		// TODO(wilmer): Investigate why polling it still necessary
-		// here. While testing, I ran into a few instances where the
-		// filter was not retrieved, leading to a panic. This should not
-		// happen in most cases thanks to the query logic revamp within
-		// Neutrino, but it seems there's still an uncovered edge case.
-		filter, err := s.pollCFilter(&blk.Hash)
+		filter, err := s.CS.GetCFilter(blk.Hash,
+			wire.GCSFilterRegular, neutrino.OptimisticBatch())
 		if err != nil {
 			return nil, err
 		}
@@ -343,36 +339,6 @@ func buildFilterBlocksWatchList(req *FilterBlocksRequest) ([][]byte, error) {
 	return watchList, nil
 }
 
-// pollCFilter attempts to fetch a CFilter from the neutrino client. This is
-// used to get around the fact that the filter headers may lag behind the
-// highest known block header.
-func (s *NeutrinoClient) pollCFilter(hash *chainhash.Hash) (*gcs.Filter, error) {
-	var (
-		filter *gcs.Filter
-		err    error
-		count  int
-	)
-
-	const maxFilterRetries = 50
-	for count < maxFilterRetries {
-		if count > 0 {
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		filter, err = s.CS.GetCFilter(
-			*hash, wire.GCSFilterRegular, neutrino.OptimisticBatch(),
-		)
-		if err != nil {
-			count++
-			continue
-		}
-
-		return filter, nil
-	}
-
-	return nil, err
-}
-
 // Rescan replicates the RPC client's Rescan command.
 func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Address,
 	outPoints map[wire.OutPoint]ltcutil.Address) error {
@@ -382,6 +348,9 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 	defer s.rescanMtx.Unlock()
 
 	s.clientMtx.Lock()
+
+	s.CS.NotifyMempoolReceived(addrs)
+
 	if !s.started {
 		s.clientMtx.Unlock()
 		return fmt.Errorf("can't do a rescan when the chain client " +
@@ -477,6 +446,10 @@ func (s *NeutrinoClient) Rescan(startHash *chainhash.Hash, addrs []ltcutil.Addre
 // NotifyBlocks replicates the RPC client's NotifyBlocks command.
 func (s *NeutrinoClient) NotifyBlocks() error {
 	s.clientMtx.Lock()
+
+	s.CS.RegisterMempoolCallback(s.onRecvTx)
+	s.CS.RegisterMwebUtxosCallback(s.onMwebUtxos)
+
 	// If we're scanning, we're already notifying on blocks. Otherwise,
 	// start a rescan without watching any addresses.
 	if !s.scanning {
@@ -494,6 +467,8 @@ func (s *NeutrinoClient) NotifyReceived(addrs []ltcutil.Address) error {
 	defer s.rescanMtx.Unlock()
 
 	s.clientMtx.Lock()
+
+	s.CS.NotifyMempoolReceived(addrs)
 
 	// If we have a rescan running, we just need to add the appropriate
 	// addresses to the watch list.
@@ -796,4 +771,26 @@ out:
 	s.Stop()
 	close(s.dequeueNotification)
 	s.wg.Done()
+}
+
+func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx) {
+	rec, err := wtxmgr.NewTxRecordFromMsgTx(tx.MsgTx(), time.Now())
+	if err != nil {
+		log.Errorf("Cannot create transaction record for relevant "+
+			"tx: %v", err)
+		return
+	}
+	select {
+	case s.enqueueNotification <- RelevantTx{rec, nil}:
+	case <-s.quit:
+	}
+}
+
+func (s *NeutrinoClient) onMwebUtxos(
+	leafset *mweb.Leafset, utxos []*wire.MwebNetUtxo) {
+
+	select {
+	case s.enqueueNotification <- MwebUtxos{leafset, utxos}:
+	case <-s.quit:
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/gcs"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/neutrino"
@@ -104,6 +105,10 @@ func (m *mockChainService) SendTransaction(*wire.MsgTx) error {
 	return errNotImplemented
 }
 
+func (m *mockChainService) MarkAsConfirmed(chainhash.Hash) {
+	panic(errNotImplemented)
+}
+
 func (m *mockChainService) GetCFilter(chainhash.Hash,
 	wire.FilterType, ...neutrino.QueryOption) (*gcs.Filter, error) {
 
@@ -137,6 +142,24 @@ func (m *mockChainService) AddBytesReceived(uint64) {
 }
 
 func (m *mockChainService) NetTotals() (uint64, uint64) {
+	panic(errNotImplemented)
+}
+
+func (m *mockChainService) RegisterMempoolCallback(func(*ltcutil.Tx)) {
+}
+
+func (m *mockChainService) NotifyMempoolReceived([]ltcutil.Address) {
+}
+
+func (m *mockChainService) RegisterMwebUtxosCallback(
+	func(*mweb.Leafset, []*wire.MwebNetUtxo)) {
+}
+
+func (m *mockChainService) NotifyAddedMwebUtxos(*mweb.Leafset) error {
+	return errNotImplemented
+}
+
+func (m *mockChainService) MwebUtxoExists(*chainhash.Hash) bool {
 	panic(errNotImplemented)
 }
 
