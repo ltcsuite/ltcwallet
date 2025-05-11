@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -342,7 +343,6 @@ func TestFundPsbt(t *testing.T) {
 			// The third item should be the branch and should belong
 			// to a change output.
 			require.EqualValues(t, 1, b32d.Bip32Path[3])
-
 			assertChangeOutputScope(
 				t, changeTxOut.PkScript, tc.changeKeyScope,
 			)
@@ -402,7 +402,11 @@ func assertChangeOutputScope(t *testing.T, pkScript []byte,
 	// By default (changeScope == nil), the script should
 	// be a pay-to-taproot one.
 	switch changeScope {
-	case nil, &waddrmgr.KeyScopeBIP0086:
+	// LITECOIN: default change goes to witness pk
+	case nil:
+		require.True(t, txscript.IsPayToWitnessPubKeyHash(pkScript))
+
+	case &waddrmgr.KeyScopeBIP0086:
 		require.True(t, txscript.IsPayToTaproot(pkScript))
 
 	case &waddrmgr.KeyScopeBIP0049Plus, &waddrmgr.KeyScopeBIP0084:
@@ -498,8 +502,10 @@ func TestFinalizePsbt(t *testing.T) {
 		Outputs: []psbt.POutput{{}, {}, {}},
 	}
 
+	var mwebKeychain *mweb.Keychain
+
 	// Finalize it to add all witness data then extract the final TX.
-	err = w.FinalizePsbt(nil, 0, packet)
+	err = w.FinalizePsbt(nil, 0, mwebKeychain, packet)
 	if err != nil {
 		t.Fatalf("error finalizing PSBT packet: %v", err)
 	}
