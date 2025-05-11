@@ -19,7 +19,7 @@ require (
 	github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0
 	github.com/ltcsuite/ltcwallet/wallet/txsizes v1.2.3
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.5
-	github.com/ltcsuite/ltcwallet/wtxmgr v1.5.0
+	github.com/ltcsuite/ltcwallet/wtxmgr v1.5.1
 	github.com/ltcsuite/neutrino v0.16.0
 	github.com/ltcsuite/neutrino/cache v1.1.0
 	github.com/stretchr/testify v1.8.3
