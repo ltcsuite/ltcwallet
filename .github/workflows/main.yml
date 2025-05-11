@@ -71,16 +71,16 @@ jobs:
       - name: git checkout
         uses: actions/checkout@v2
 
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: /home/runner/work/go
-          key: btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            btcwallet-${{ runner.os }}-go-
+      # - name: go cache
+      #   uses: actions/cache@v1
+      #   with:
+      #     path: /home/runner/work/go
+      #     key: btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+      #     restore-keys: |
+      #       btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
+      #       btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
+      #       btcwallet-${{ runner.os }}-go-${{ env.GO_VERSION }}-
+      #       btcwallet-${{ runner.os }}-go-
 
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
