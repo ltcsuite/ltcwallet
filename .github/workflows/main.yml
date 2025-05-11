@@ -19,8 +19,8 @@ env:
   GO111MODULE: on
 
   GO_VERSION: 1.19.x
-  BITCOIND_VERSION: '22.0'
-  BITCOIND_IMAGE: 'lightninglabs/bitcoin-core'
+  BITCOIND_VERSION: "0.21.4"
+  BITCOIND_IMAGE: "litecoinproject/litecoin-core"
 
 jobs:
   ########################
@@ -36,7 +36,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: run format
         run: make fmt
@@ -61,11 +61,11 @@ jobs:
           - unit-race
           - unit-cover
     steps:
-      - name: extract bitcoind from docker image
+      - name: extract litecoind from docker image
         run: |-
           docker pull ${{ env.BITCOIND_IMAGE }}:${{ env.BITCOIND_VERSION }}
           CONTAINER_ID=$(docker create ${{ env.BITCOIND_IMAGE }}:${{ env.BITCOIND_VERSION }})
-          sudo docker cp $CONTAINER_ID:/opt/bitcoin-${{ env.BITCOIND_VERSION }}/bin/bitcoind /usr/local/bin/bitcoind
+          sudo docker cp $CONTAINER_ID:/opt/litecoin-${{ env.BITCOIND_VERSION }}/bin/litecoind /usr/local/bin/litecoind
           docker rm $CONTAINER_ID
 
       - name: git checkout
@@ -85,7 +85,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: run ${{ matrix.unit_type }}
         run: make ${{ matrix.unit_type }}
