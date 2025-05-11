@@ -21,7 +21,7 @@ require (
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.5
 	github.com/ltcsuite/ltcwallet/wtxmgr v1.5.0
 	github.com/ltcsuite/neutrino v0.16.0
-	github.com/ltcsuite/neutrino/cache v1.1.1
+	github.com/ltcsuite/neutrino/cache v1.1.0
 	github.com/stretchr/testify v1.8.3
 	golang.org/x/crypto v0.7.0
 	golang.org/x/net v0.10.0
