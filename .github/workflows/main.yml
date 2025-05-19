@@ -18,7 +18,7 @@ env:
   GOPATH: /home/runner/work/go
   GO111MODULE: on
 
-  GO_VERSION: 1.19.x
+  GO_VERSION: 1.24.x
   BITCOIND_VERSION: "0.21.4"
   BITCOIND_IMAGE: "litecoinproject/litecoin-core"
 
