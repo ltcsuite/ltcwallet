@@ -9,13 +9,13 @@ require (
 	github.com/jrick/logrotate v1.0.0
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf
 	github.com/ltcsuite/lnd/ticker v1.1.0
-	github.com/ltcsuite/lnd/tlv v0.0.0-20240222214433-454d35886119
+	github.com/ltcsuite/lnd/tlv v1.1.1
 	github.com/ltcsuite/ltcd v0.23.6
 	github.com/ltcsuite/ltcd/btcec/v2 v2.3.2
 	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2
 	github.com/ltcsuite/ltcd/ltcutil v1.1.4
 	github.com/ltcsuite/ltcd/ltcutil/psbt v1.1.8
-	github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.2
+	github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.3
 	github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0
 	github.com/ltcsuite/ltcwallet/wallet/txsizes v1.2.3
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.5
@@ -38,7 +38,6 @@ require (
 	github.com/decred/dcrd/crypto/blake256 v1.0.0 // indirect
 	github.com/decred/dcrd/lru v1.1.1 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
-	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/ltcsuite/lnd/clock v1.1.0 // indirect
