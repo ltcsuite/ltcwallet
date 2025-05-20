@@ -164,14 +164,14 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		maxRequiredFee := txrules.FeeForSerializeSize(feeRatePerKb, maxSignedSize)
 
 		var changeKeyScope *waddrmgr.KeyScope
-		// if isMweb {
-		// 	if mwebIn < len(inputs) {
-		// 		maxRequiredFee += ltcutil.Amount(mwebFee)
-		// 	} else {
-		// 		maxRequiredFee = ltcutil.Amount(mwebFee)
-		// 	}
-		// 	changeKeyScope = &waddrmgr.KeyScopeMweb
-		// }
+		if isMweb {
+			if mwebIn < len(inputs) {
+				maxRequiredFee += ltcutil.Amount(mwebFee)
+			} else {
+				maxRequiredFee = ltcutil.Amount(mwebFee)
+			}
+			changeKeyScope = &waddrmgr.KeyScopeMweb
+		}
 
 		remainingAmount := inputAmount - targetAmount
 		if remainingAmount < maxRequiredFee {
