@@ -169,6 +169,51 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 
 	var tx *txauthor.AuthoredTx
 	err = walletdb.Update(w.db, func(dbtx walletdb.ReadWriteTx) error {
+		// When specific UTXOs are selected, determine if they are MWEB type
+		// and set the change scope accordingly.
+		// input MWEB -> change MWEB
+		// input canonical -> change P2WKH
+		if len(selectedUtxos) > 0 && changeKeyScope == nil {
+			txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+			if txmgrNs == nil {
+				return fmt.Errorf("wtxmgrNamespaceKey bucket is nil")
+			}
+
+			unspent, err := w.TxStore.UnspentOutputs(txmgrNs)
+			if err != nil {
+				return err
+			}
+
+			// Create a map to find the selected UTXOs
+			selectedMap := make(map[wire.OutPoint]struct{})
+			for _, outpoint := range selectedUtxos {
+				selectedMap[outpoint] = struct{}{}
+			}
+
+			// Check if any selected UTXO is MWEB type
+			mwebSelected := false
+			matchCount := 0
+			for _, output := range unspent {
+				if _, ok := selectedMap[output.OutPoint]; ok {
+					matchCount++
+					if txscript.IsMweb(output.PkScript) {
+						mwebSelected = true
+						break
+					}
+				}
+			}
+
+			// If selected UTXOs contain MWEB type, set change scope to MWEB
+			if mwebSelected {
+				mwebScope := waddrmgr.KeyScopeMweb
+				changeKeyScope = &mwebScope
+			} else {
+				// Otherwise use P2WKH for canonical type
+				p2wkhScope := waddrmgr.KeyScopeBIP0084
+				changeKeyScope = &p2wkhScope
+			}
+		}
+
 		addrmgrNs, changeSource, err := w.addrMgrWithChangeSource(
 			dbtx, changeKeyScope, account,
 		)
