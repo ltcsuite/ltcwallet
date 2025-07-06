@@ -56,22 +56,34 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		return 0, err
 	}
 
-	if len(packet.UnsignedTx.TxIn) == 0 && len(packet.UnsignedTx.TxOut) == 0 {
+	if len(packet.Inputs) == 0 && len(packet.Outputs) == 0 {
 		return 0, fmt.Errorf("PSBT packet must contain at least one " +
 			"input or output")
 	}
 
-	txOut := packet.UnsignedTx.TxOut
-	txIn := packet.UnsignedTx.TxIn
+	txouts := make([]*wire.TxOut, len(packet.Outputs))
+	for idx, output := range packet.Outputs {
+		var txout wire.TxOut
+		txout.Value = int64(output.Amount)
+		if output.StealthAddress != nil {
+			pkScript := append(output.StealthAddress.Scan[:], output.StealthAddress.Spend[:]...)
+			copy(txout.PkScript[:], pkScript)
+		} else {
+			copy(txout.PkScript[:], output.PKScript)
+		}
+		txouts[idx] = &txout
+	}
 
 	// Make sure none of the outputs are dust.
-	for _, output := range txOut {
+	for _, txout := range txouts {
+		// TODO: Skip for MWEB?
+
 		// When checking an output for things like dusty-ness, we'll
 		// use the default mempool relay fee rather than the target
 		// effective fee rate to ensure accuracy. Otherwise, we may
 		// mistakenly mark small-ish, but not quite dust output as
 		// dust.
-		err := txrules.CheckOutput(output, txrules.DefaultRelayFeePerKb)
+		err := txrules.CheckOutput(txout, txrules.DefaultRelayFeePerKb)
 		if err != nil {
 			return 0, err
 		}
@@ -79,61 +91,19 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 
 	// Let's find out the amount to fund first.
 	amt := int64(0)
-	for _, output := range txOut {
-		amt += output.Value
-	}
-
-	// addInputInfo is a helper function that fetches the UTXO information
-	// of an input and attaches it to the PSBT packet.
-	addInputInfo := func(inputs []*wire.TxIn) error {
-		packet.Inputs = make([]psbt.PInput, len(inputs))
-		for idx, in := range inputs {
-			tx, utxo, derivationPath, _, err := w.FetchInputInfo(
-				&in.PreviousOutPoint,
-			)
-			if err != nil {
-				return fmt.Errorf("error fetching UTXO: %v",
-					err)
-			}
-
-			addr, witnessProgram, _, err := w.ScriptForOutput(utxo)
-			if err != nil {
-				return fmt.Errorf("error fetching UTXO "+
-					"script: %v", err)
-			}
-
-			// We don't want to include the witness or any script
-			// on the unsigned TX just yet.
-			packet.UnsignedTx.TxIn[idx].Witness = wire.TxWitness{}
-			packet.UnsignedTx.TxIn[idx].SignatureScript = nil
-
-			switch {
-			case txscript.IsPayToTaproot(utxo.PkScript):
-				addInputInfoSegWitV1(
-					&packet.Inputs[idx], utxo,
-					derivationPath,
-				)
-
-			default:
-				addInputInfoSegWitV0(
-					&packet.Inputs[idx], tx, utxo,
-					derivationPath, addr, witnessProgram,
-				)
-			}
-		}
-
-		return nil
+	for _, output := range packet.Outputs {
+		amt += int64(output.Amount)
 	}
 
 	var tx *txauthor.AuthoredTx
 	switch {
 	// We need to do coin selection.
-	case len(txIn) == 0:
+	case len(packet.Inputs) == 0:
 		// We ask the underlying wallet to fund a TX for us. This
 		// includes everything we need, specifically fee estimation and
 		// change address creation.
 		tx, err = w.CreateSimpleTx(
-			keyScope, account, packet.UnsignedTx.TxOut, minConfs,
+			keyScope, account, txouts, minConfs,
 			feeSatPerKB, coinSelectionStrategy, false,
 			optFuncs...,
 		)
@@ -146,8 +116,15 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		// that we can and attach them to the PSBT as well. We don't
 		// include the witness as the resulting PSBT isn't expected not
 		// should be signed yet.
-		packet.UnsignedTx.TxIn = tx.Tx.TxIn
-		err = addInputInfo(tx.Tx.TxIn)
+		for _, txin := range tx.Tx.TxIn {
+			input := psbt.PInput{
+				PrevoutHash:  &txin.PreviousOutPoint.Hash,
+				PrevoutIndex: &txin.PreviousOutPoint.Index,
+				Sequence:     &txin.Sequence,
+			}
+			packet.Inputs = append(packet.Inputs, input)
+		}
+		err = addInputInfo(w, packet)
 		if err != nil {
 			return 0, err
 		}
@@ -156,7 +133,7 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 	// a change output if necessary.
 	default:
 		// Make sure all inputs provided are actually ours.
-		err = addInputInfo(txIn)
+		err = addInputInfo(w, packet)
 		if err != nil {
 			return 0, err
 		}
@@ -170,13 +147,24 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		// own static input source creator instead of the more generic
 		// makeInputSource() that selects a subset that is "large
 		// enough".
-		credits := make([]wtxmgr.Credit, len(txIn))
-		for idx, in := range txIn {
-			utxo := packet.Inputs[idx].WitnessUtxo
+		credits := make([]wtxmgr.Credit, len(packet.Inputs))
+		for idx, in := range packet.Inputs {
+			utxo := in.WitnessUtxo
+			var amount ltcutil.Amount
+			var PkScript []byte
+			if utxo != nil {
+				amount = ltcutil.Amount(utxo.Value)
+				PkScript = utxo.PkScript
+			} else {
+				amount = *in.MwebAmount
+				// TODO:
+				//stealthAddress := in.MwebMasterScanKey.
+				//PkScript = append(stealthAddress.Scan[:], stealthAddress.Spend[:]...)
+			}
 			credits[idx] = wtxmgr.Credit{
-				OutPoint: in.PreviousOutPoint,
-				Amount:   ltcutil.Amount(utxo.Value),
-				PkScript: utxo.PkScript,
+				OutPoint: wire.OutPoint{Hash: *in.PrevoutHash, Index: *in.PrevoutIndex},
+				Amount:   amount,
+				PkScript: PkScript,
 			}
 		}
 		inputSource := constantInputSource(credits)
@@ -205,7 +193,7 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 			// selected coins. This will perform fee estimation and
 			// add a change output if necessary.
 			tx, err = txauthor.NewUnsignedTransaction(
-				txOut, feeSatPerKB, inputSource, changeSource,
+				txouts, feeSatPerKB, inputSource, changeSource,
 			)
 			if err != nil {
 				return fmt.Errorf("fee estimation not "+
@@ -224,10 +212,6 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 	var changeTxOut *wire.TxOut
 	if tx.ChangeIndex >= 0 {
 		changeTxOut = tx.Tx.TxOut[tx.ChangeIndex]
-		packet.UnsignedTx.TxOut = append(
-			packet.UnsignedTx.TxOut, changeTxOut,
-		)
-
 		addr, _, _, err := w.ScriptForOutput(changeTxOut)
 		if err != nil {
 			return 0, fmt.Errorf("error querying wallet for "+
@@ -255,8 +239,9 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 	// to find our index again.
 	changeIndex := int32(-1)
 	if changeTxOut != nil {
-		for idx, txOut := range packet.UnsignedTx.TxOut {
-			if psbt.TxOutsEqual(changeTxOut, txOut) {
+		for idx, output := range packet.Outputs {
+			// TODO: Handle MWEB change
+			if int64(output.Amount) == changeTxOut.Value && bytes.Equal(output.PKScript, changeTxOut.PkScript) {
 				changeIndex = int32(idx)
 				break
 			}
@@ -264,6 +249,41 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 	}
 
 	return changeIndex, nil
+}
+
+// addInputInfo is a helper function that fetches the UTXO information
+// of an input and attaches it to the PSBT packet.
+func addInputInfo(w *Wallet, packet *psbt.Packet) error {
+	for _, in := range packet.Inputs {
+		if in.MwebOutputId != nil {
+			continue // TODO: MWEB
+		}
+
+		prevOutPoint := wire.OutPoint{Hash: *in.PrevoutHash, Index: *in.PrevoutIndex}
+		tx, utxo, derivationPath, _, err := w.FetchInputInfo(
+			&prevOutPoint,
+		)
+		if err != nil {
+			return fmt.Errorf("error fetching UTXO: %v",
+				err)
+		}
+
+		addr, witnessProgram, _, err := w.ScriptForOutput(utxo)
+		if err != nil {
+			return fmt.Errorf("error fetching UTXO "+
+				"script: %v", err)
+		}
+
+		switch {
+		case txscript.IsPayToTaproot(utxo.PkScript):
+			addInputInfoSegWitV1(&in, utxo, derivationPath)
+
+		default:
+			addInputInfoSegWitV0(&in, tx, utxo, derivationPath, addr, witnessProgram)
+		}
+	}
+
+	return nil
 }
 
 // addInputInfoSegWitV0 adds the UTXO and BIP32 derivation info for a SegWit v0
@@ -535,18 +555,22 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 // information in a PSBT packet.
 func PsbtPrevOutputFetcher(packet *psbt.Packet) *txscript.MultiPrevOutFetcher {
 	fetcher := txscript.NewMultiPrevOutFetcher(nil)
-	for idx, txIn := range packet.UnsignedTx.TxIn {
-		in := packet.Inputs[idx]
+	for _, in := range packet.Inputs {
+		if in.MwebOutputId != nil {
+			continue // TODO: MWEB
+		}
 
 		// Skip any input that has no UTXO.
 		if in.WitnessUtxo == nil && in.NonWitnessUtxo == nil {
 			continue
 		}
 
+		prevOutPoint := wire.OutPoint{Hash: *in.PrevoutHash, Index: *in.PrevoutIndex}
+
 		if in.NonWitnessUtxo != nil {
-			prevIndex := txIn.PreviousOutPoint.Index
+			prevIndex := *in.PrevoutIndex
 			fetcher.AddPrevOut(
-				txIn.PreviousOutPoint,
+				prevOutPoint,
 				in.NonWitnessUtxo.TxOut[prevIndex],
 			)
 
@@ -556,7 +580,7 @@ func PsbtPrevOutputFetcher(packet *psbt.Packet) *txscript.MultiPrevOutFetcher {
 		// Fall back to witness UTXO only for older wallets.
 		if in.WitnessUtxo != nil {
 			fetcher.AddPrevOut(
-				txIn.PreviousOutPoint, in.WitnessUtxo,
+				prevOutPoint, in.WitnessUtxo,
 			)
 		}
 	}

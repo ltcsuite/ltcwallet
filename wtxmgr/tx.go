@@ -450,20 +450,36 @@ func (s *Store) GetMwebOutpoint(
 // Find the mweb output within the transaction that corresponds
 // to the synthetic outpoint.
 func (s *Store) GetMwebOutput(ns walletdb.ReadBucket,
-	op *wire.OutPoint, rec *TxRecord) (*wire.MwebOutput, error) {
+	op *wire.OutPoint, rec *TxRecord) (*wire.MwebOutput, *TxRecord, error) {
 
-	if rec.MsgTx.Mweb != nil {
-		for _, output := range rec.MsgTx.Mweb.TxBody.Outputs {
+	txRecord := rec
+	if txRecord == nil {
+		_, val := latestTxRecord(ns, &op.Hash)
+		if val == nil {
+			val = existsRawUnmined(ns, op.Hash[:])
+		}
+		if val == nil {
+			return nil, nil, nil
+		}
+		txRecord = &TxRecord{}
+		err := readRawTxRecord(&op.Hash, val, txRecord)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	if txRecord.MsgTx.Mweb != nil {
+		for _, output := range txRecord.MsgTx.Mweb.TxBody.Outputs {
 			outpoint, err := existsMwebOutpoint(ns, output.Hash())
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if outpoint != nil && *outpoint == *op {
-				return output, nil
+				return output, txRecord, nil
 			}
 		}
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 // insertMinedTx inserts a new transaction record for a mined transaction into
@@ -923,7 +939,7 @@ func (s *Store) UnspentOutputs2(ns walletdb.ReadBucket, all bool) ([]Credit, err
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
 			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
 		}
-		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, rec)
+		cred.MwebOutput, _, err = s.GetMwebOutput(ns, &op, rec)
 		if err != nil {
 			return err
 		}
@@ -977,7 +993,7 @@ func (s *Store) UnspentOutputs2(ns walletdb.ReadBucket, all bool) ([]Credit, err
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
 			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
 		}
-		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, &rec)
+		cred.MwebOutput, _, err = s.GetMwebOutput(ns, &op, &rec)
 		if err != nil {
 			return err
 		}
