@@ -477,6 +477,51 @@ func (s *ScopedKeyManager) deriveSpendKey(key *hdkeychain.ExtendedKey,
 	return hdkeychain.NewExtendedKey(nil, keyBytes, nil, nil, 0, 0, key.IsPrivate()), nil
 }
 
+func (s *ScopedKeyManager) LoadMwebKeychain(ns walletdb.ReadBucket, account uint32) (*mweb.Keychain, error) {
+	// The next address can only be generated for accounts that have
+	// already been created.
+	acctInfo, err := s.loadAccountInfo(ns, account)
+	if err != nil {
+		return nil, err
+	}
+
+	if acctInfo.scanKey == nil {
+		str := "failed to derive scan key"
+		return nil, managerError(ErrKeyChain, str, err)
+	}
+
+	scanKeyPriv, _ := acctInfo.scanKey.ECPrivKey()
+	defer scanKeyPriv.Zero()
+	scanSecret := mw.SecretKey(scanKeyPriv.Key.Bytes())
+
+	acctKey := acctInfo.acctKeyPub
+	watchOnly := s.rootManager.watchOnly() || len(acctInfo.acctKeyEncrypted) == 0
+	if !s.rootManager.isLocked() && !watchOnly {
+		acctKey = acctInfo.acctKeyPriv
+	}
+
+	var keychain *mweb.Keychain
+	if acctKey.IsPrivate() {
+		spendKey, err := acctKey.Derive(hdkeychain.HardenedKeyStart + 1)
+		if err != nil {
+			str := "failed to derive spend key"
+			return nil, managerError(ErrKeyChain, str, err)
+		}
+		defer spendKey.Zero() // Ensure key is zeroed when done.
+		spendKeyPriv, _ := spendKey.ECPrivKey()
+		defer spendKeyPriv.Zero()
+		spendSecret := mw.SecretKey(spendKeyPriv.Key.Bytes())
+
+		keychain = &mweb.Keychain{Scan: &scanSecret, Spend: &spendSecret}
+	} else {
+		spendKeyPub, _ := acctInfo.spendPubKey.ECPubKey()
+		spendPubKey := (*mw.PublicKey)(spendKeyPub.SerializeCompressed())
+		keychain = &mweb.Keychain{Scan: &scanSecret, SpendPubKey: spendPubKey}
+	}
+
+	return keychain, nil
+}
+
 // loadAccountInfo attempts to load and cache information about the given
 // account from the database.   This includes what is necessary to derive new
 // keys for it and track the state of the internal and external branches.

@@ -6,14 +6,17 @@ package wallet
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcd/ltcutil/mweb"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
@@ -61,18 +64,7 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 			"input or output")
 	}
 
-	txouts := make([]*wire.TxOut, len(packet.Outputs))
-	for idx, output := range packet.Outputs {
-		var txout wire.TxOut
-		txout.Value = int64(output.Amount)
-		if output.StealthAddress != nil {
-			pkScript := append(output.StealthAddress.Scan[:], output.StealthAddress.Spend[:]...)
-			copy(txout.PkScript[:], pkScript)
-		} else {
-			copy(txout.PkScript[:], output.PKScript)
-		}
-		txouts[idx] = &txout
-	}
+	txouts := packet.BuildTxOuts()
 
 	// Make sure none of the outputs are dust.
 	for _, txout := range txouts {
@@ -150,21 +142,10 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		credits := make([]wtxmgr.Credit, len(packet.Inputs))
 		for idx, in := range packet.Inputs {
 			utxo := in.WitnessUtxo
-			var amount ltcutil.Amount
-			var PkScript []byte
-			if utxo != nil {
-				amount = ltcutil.Amount(utxo.Value)
-				PkScript = utxo.PkScript
-			} else {
-				amount = *in.MwebAmount
-				// TODO:
-				//stealthAddress := in.MwebMasterScanKey.
-				//PkScript = append(stealthAddress.Scan[:], stealthAddress.Spend[:]...)
-			}
 			credits[idx] = wtxmgr.Credit{
 				OutPoint: wire.OutPoint{Hash: *in.PrevoutHash, Index: *in.PrevoutIndex},
-				Amount:   amount,
-				PkScript: PkScript,
+				Amount:   ltcutil.Amount(utxo.Value),
+				PkScript: utxo.PkScript,
 			}
 		}
 		inputSource := constantInputSource(credits)
@@ -208,6 +189,12 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		}
 	}
 
+	if tx.Tx.Mweb != nil {
+		for _, kernel := range tx.Tx.Mweb.TxBody.Kernels {
+			packet.Kernels = append(packet.Kernels, createKernelInfo(kernel))
+		}
+	}
+
 	// If there is a change output, we need to copy it over to the PSBT now.
 	var changeTxOut *wire.TxOut
 	if tx.ChangeIndex >= 0 {
@@ -248,15 +235,25 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 		}
 	}
 
+	err = addKernelInfo(packet, feeSatPerKB)
+	if err != nil {
+		return 0, err
+	}
+
 	return changeIndex, nil
 }
 
 // addInputInfo is a helper function that fetches the UTXO information
 // of an input and attaches it to the PSBT packet.
 func addInputInfo(w *Wallet, packet *psbt.Packet) error {
-	for _, in := range packet.Inputs {
-		if in.MwebOutputId != nil {
-			continue // TODO: MWEB
+	for idx, _ := range packet.Inputs {
+		in := &packet.Inputs[idx]
+		if in.PrevoutHash == nil || in.PrevoutIndex == nil {
+			if in.MwebOutputId == nil {
+				continue // TODO: Handle MWEB
+			} else {
+				return errors.New("invalid previous outpoint")
+			}
 		}
 
 		prevOutPoint := wire.OutPoint{Hash: *in.PrevoutHash, Index: *in.PrevoutIndex}
@@ -276,10 +273,14 @@ func addInputInfo(w *Wallet, packet *psbt.Packet) error {
 
 		switch {
 		case txscript.IsPayToTaproot(utxo.PkScript):
-			addInputInfoSegWitV1(&in, utxo, derivationPath)
-
+			addInputInfoSegWitV1(in, utxo, derivationPath)
+		case txscript.IsMweb(utxo.PkScript):
+			mwebErr := addInputInfoMweb(w, in, tx, utxo)
+			if mwebErr != nil {
+				return mwebErr
+			}
 		default:
-			addInputInfoSegWitV0(&in, tx, utxo, derivationPath, addr, witnessProgram)
+			addInputInfoSegWitV0(in, tx, utxo, derivationPath, addr, witnessProgram)
 		}
 	}
 
@@ -343,6 +344,124 @@ func addInputInfoSegWitV1(in *psbt.PInput, utxo *wire.TxOut,
 	}}
 }
 
+func addInputInfoMweb(w *Wallet, in *psbt.PInput, prevTx *wire.MsgTx, utxo *wire.TxOut) error {
+	var mwebOutput *wire.MwebOutput
+	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		txmgrNs := tx.ReadBucket(wtxmgrNamespaceKey)
+		prevOutPoint := wire.OutPoint{Hash: *in.PrevoutHash, Index: *in.PrevoutIndex}
+		var err error
+		mwebOutput, err = w.TxStore.GetMwebOutput(txmgrNs, &prevOutPoint, prevTx)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+
+	in.WitnessUtxo = &wire.TxOut{
+		Value:    utxo.Value,
+		PkScript: utxo.PkScript,
+	}
+
+	value := ltcutil.Amount(utxo.Value)
+	in.MwebAmount = &value
+
+	in.MwebOutputId = mwebOutput.Hash()
+	in.MwebKeyExchangePubkey = &mwebOutput.Message.KeyExchangePubKey
+	in.MwebCommit = &mwebOutput.Commitment
+	in.MwebOutputPubkey = &mwebOutput.ReceiverPubKey
+
+	// TODO: MwebMasterScanKey and MwebMasterSpendKey Bip32Derivation's? MwebAddressIndex?
+	return nil
+}
+
+func addKernelInfo(packet *psbt.Packet, feeRatePerKb ltcutil.Amount) error {
+	ltcIn := ltcutil.Amount(0)
+	mwebIn := ltcutil.Amount(0)
+	for _, in := range packet.Inputs {
+		if in.MwebAmount != nil {
+			mwebIn += *in.MwebAmount
+		} else {
+			ltcIn += ltcutil.Amount(in.WitnessUtxo.Value)
+		}
+	}
+
+	ltcOut := ltcutil.Amount(0)
+	mwebOut := ltcutil.Amount(0)
+	for _, out := range packet.Outputs {
+		if out.StealthAddress != nil {
+			mwebOut += out.Amount
+		} else {
+			ltcOut += out.Amount
+		}
+	}
+
+	if mwebIn == 0 && mwebOut == 0 {
+		return nil
+	}
+
+	kernel := psbt.PKernel{}
+
+	// Determine fee
+	txouts := packet.BuildTxOuts()
+	mwebFee := ltcutil.Amount(mweb.EstimateFee(txouts, feeRatePerKb, true))
+	kernel.Fee = &mwebFee
+
+	// Add Pegin
+	if ltcIn > 0 {
+		totalFee := (ltcIn + mwebIn) - (ltcOut + mwebOut)
+
+		ltcFee := totalFee - mwebFee
+		if ltcFee < ltcIn {
+			return errors.New("not enough fee")
+		}
+
+		peginAmount := ltcIn - ltcFee
+		kernel.PeginAmount = &peginAmount
+	}
+
+	// If there are *any* MWEB inputs, all LTC outputs become pegouts.
+	if ltcOut > 0 && mwebIn > 0 {
+		for _, out := range packet.Outputs {
+			if out.StealthAddress == nil {
+				kernel.PegOuts = append(kernel.PegOuts, &wire.TxOut{
+					Value:    int64(out.Amount),
+					PkScript: out.PKScript,
+				})
+			}
+		}
+	}
+
+	packet.Kernels = append(packet.Kernels, kernel)
+	return nil
+}
+
+func createKernelInfo(kernel *wire.MwebKernel) psbt.PKernel {
+	var pKern psbt.PKernel
+	fee := ltcutil.Amount(kernel.Fee)
+	pKern.Fee = &fee
+
+	if kernel.Pegin > 0 {
+		pegin := ltcutil.Amount(kernel.Pegin)
+		pKern.PeginAmount = &pegin
+	}
+
+	if len(kernel.Pegouts) > 0 {
+		pKern.PegOuts = make([]*wire.TxOut, len(kernel.Pegouts))
+		copy(pKern.PegOuts, kernel.Pegouts)
+	}
+
+	if kernel.LockHeight > 0 {
+		pKern.LockHeight = &kernel.LockHeight
+	}
+
+	if len(kernel.ExtraData) > 0 {
+		pKern.ExtraData = make([]byte, len(kernel.ExtraData))
+		copy(pKern.ExtraData, kernel.ExtraData)
+	}
+
+	return pKern
+}
+
 // createOutputInfo creates the BIP32 derivation info for an output from our
 // internal wallet.
 func createOutputInfo(txOut *wire.TxOut,
@@ -371,6 +490,7 @@ func createOutputInfo(txOut *wire.TxOut,
 		},
 	}
 	out := &psbt.POutput{
+		Amount: ltcutil.Amount(txOut.Value),
 		Bip32Derivation: []*psbt.Bip32Derivation{
 			derivation,
 		},
@@ -387,6 +507,13 @@ func createOutputInfo(txOut *wire.TxOut,
 		out.TaprootInternalKey = schnorrPubKey
 	}
 
+	if txscript.IsMweb(txOut.PkScript) {
+		out.StealthAddress = &mw.StealthAddress{
+			Scan:  (*mw.PublicKey)(txOut.PkScript[:33]),
+			Spend: (*mw.PublicKey)(txOut.PkScript[33:]),
+		}
+	}
+
 	return out, nil
 }
 
@@ -400,8 +527,7 @@ func createOutputInfo(txOut *wire.TxOut,
 //
 // NOTE: This method does NOT publish the transaction after it's been finalized
 // successfully.
-func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
-	mwebKeychain *mweb.Keychain, packet *psbt.Packet) error {
+func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32, packet *psbt.Packet) error {
 
 	// Let's check that this is actually something we can and want to sign.
 	// We need at least one input and one output. In addition each
@@ -411,14 +537,21 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 		return err
 	}
 
+	tx, err := psbt.ExtractUnsignedTx(packet)
+	if err != nil {
+		return err
+	}
+
 	// Go through each input that doesn't have final witness data attached
 	// to it already and try to sign it. We do expect that we're the last
 	// ones to sign. If there is any input without witness data that we
 	// cannot sign because it's not our UTXO, this will be a hard failure.
-	tx := packet.UnsignedTx
 	sigHashes := txscript.NewTxSigHashes(tx, PsbtPrevOutputFetcher(packet))
-	for idx, txIn := range tx.TxIn {
-		in := packet.Inputs[idx]
+	for idx, in := range packet.Inputs {
+		// MWEB inputs are signed below this loop
+		if in.MwebOutputId != nil {
+			continue
+		}
 
 		// We can only sign if we have UTXO information available. We
 		// can just continue here as a later step will fail with a more
@@ -436,7 +569,10 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 		// to a coin we own. If we can't, then we'll continue as it
 		// isn't our input.
 		fullTx, txOut, _, _, err := w.FetchInputInfo(
-			&txIn.PreviousOutPoint,
+			&wire.OutPoint{
+				Hash:  *in.PrevoutHash,
+				Index: *in.PrevoutIndex,
+			},
 		)
 		if err != nil {
 			continue
@@ -446,7 +582,7 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 		// provide the full non-witness UTXO for segwit v0.
 		var signOutput *wire.TxOut
 		if in.NonWitnessUtxo != nil {
-			prevIndex := txIn.PreviousOutPoint.Index
+			prevIndex := *in.PrevoutIndex
 			signOutput = in.NonWitnessUtxo.TxOut[prevIndex]
 
 			if !psbt.TxOutsEqual(txOut, signOutput) {
@@ -455,11 +591,11 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 					signOutput)
 			}
 
-			if fullTx.TxHash() != txIn.PreviousOutPoint.Hash {
+			if fullTx.TxHash() != *in.PrevoutHash {
 				return fmt.Errorf("found UTXO tx %v but it "+
 					"doesn't match PSBT's input %v",
 					fullTx.TxHash(),
-					txIn.PreviousOutPoint.Hash)
+					*in.PrevoutHash)
 			}
 		}
 
@@ -524,21 +660,18 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32,
 		packet.Inputs[idx].FinalScriptSig = sigScript
 	}
 
-	if mwebKeychain != nil {
-		mwebInputSigner := psbt.BasicMwebInputSigner{
-			Keychain:           mwebKeychain,
-			LookupAddressIndex: psbt.NaiveAddressLookup,
-		}
-		psbtSigner, err := psbt.NewSigner(packet, mwebInputSigner)
-		if err != nil {
-			return fmt.Errorf("error creating PSBT signer: %v", err)
-		}
-		signOutcome, err := psbtSigner.SignMwebComponents()
-		if err != nil {
-			return fmt.Errorf("error during MWEB signing: %v", err)
-		} else if signOutcome != psbt.SignSuccesful {
-			return fmt.Errorf("mweb components not signed successfully")
-		}
+	mwebInputSigner := psbt.BasicMwebInputSigner{
+		DeriveOutputKeys: w.mwebDeriveOutputKeys,
+	}
+	psbtSigner, err := psbt.NewSigner(packet, mwebInputSigner)
+	if err != nil {
+		return fmt.Errorf("error creating PSBT signer: %v", err)
+	}
+	signOutcome, err := psbtSigner.SignMwebComponents()
+	if err != nil {
+		return fmt.Errorf("error during MWEB signing: %v", err)
+	} else if signOutcome != psbt.SignSuccesful {
+		return fmt.Errorf("mweb components not signed successfully")
 	}
 
 	// Make sure the PSBT itself thinks it's finalized and ready to be
@@ -586,4 +719,64 @@ func PsbtPrevOutputFetcher(packet *psbt.Packet) *txscript.MultiPrevOutFetcher {
 	}
 
 	return fetcher
+}
+
+func (w *Wallet) mwebDeriveOutputKeys(spentOutputPk *mw.PublicKey, keyExchangePubKey *mw.PublicKey, spentOutputSharedSecret *mw.SecretKey) (*mw.BlindingFactor, *mw.SecretKey, error) {
+	var preBlind *mw.BlindingFactor
+	var outputSpendKey *mw.SecretKey
+
+	// The key wasn't in the cache, let's fully derive it now.
+	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		ns := tx.ReadBucket(waddrmgrNamespaceKey)
+		err := w.forEachMwebAccount(ns, func(ma *mwebAccount) error {
+			if outputSpendKey != nil {
+				return nil
+			}
+
+			mwebKeychain, err := ma.skm.LoadMwebKeychain(ns, ma.account)
+			if mwebKeychain != nil {
+				fmt.Printf("Master Scan: %x, Master Spend: %x\n", *mwebKeychain.Scan, *mwebKeychain.Spend)
+
+				sharedSecret := spentOutputSharedSecret
+				if sharedSecret == nil {
+					if keyExchangePubKey == nil {
+						return errors.New("key exchange pubkey or shared secret needed")
+					}
+					sharedSecretPk := keyExchangePubKey.Mul(mwebKeychain.Scan)
+					sharedSecret = (*mw.SecretKey)(mw.Hashed(mw.HashTagDerive, sharedSecretPk[:]))
+				}
+
+				addrB := spentOutputPk.Div((*mw.SecretKey)(mw.Hashed(mw.HashTagOutKey, sharedSecret[:])))
+				addrA := addrB.Mul(mwebKeychain.Scan)
+				address := mw.StealthAddress{Scan: addrA, Spend: addrB}
+				addr := ltcutil.NewAddressMweb(&address, w.chainParams)
+
+				secrets := secretSource{w.Manager, ns}
+				spendKeyPriv, _, err := secrets.GetKey(addr)
+				if err != nil {
+					return nil
+				}
+
+				defer spendKeyPriv.Zero()
+				addrSpendSecret := (*mw.SecretKey)(spendKeyPriv.Serialize())
+				defer zero.Bytes(addrSpendSecret[:])
+
+				// Calculate pre-blind and output spend key
+				preBlind = (*mw.BlindingFactor)(mw.Hashed(mw.HashTagBlind, sharedSecret[:]))
+				outputSpendKey = addrSpendSecret.Mul((*mw.SecretKey)(mw.Hashed(mw.HashTagOutKey, sharedSecret[:])))
+			}
+			return err
+		})
+		return err
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if preBlind == nil || outputSpendKey == nil {
+		return nil, nil, fmt.Errorf("no keychain found for output %x", *spentOutputPk)
+	}
+
+	return preBlind, outputSpendKey, nil
 }

@@ -450,36 +450,36 @@ func (s *Store) GetMwebOutpoint(
 // Find the mweb output within the transaction that corresponds
 // to the synthetic outpoint.
 func (s *Store) GetMwebOutput(ns walletdb.ReadBucket,
-	op *wire.OutPoint, rec *TxRecord) (*wire.MwebOutput, *TxRecord, error) {
+	op *wire.OutPoint, tx *wire.MsgTx) (*wire.MwebOutput, error) {
 
-	txRecord := rec
-	if txRecord == nil {
+	if tx == nil {
 		_, val := latestTxRecord(ns, &op.Hash)
 		if val == nil {
 			val = existsRawUnmined(ns, op.Hash[:])
 		}
 		if val == nil {
-			return nil, nil, nil
+			return nil, nil
 		}
-		txRecord = &TxRecord{}
+		txRecord := &TxRecord{}
 		err := readRawTxRecord(&op.Hash, val, txRecord)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
+		tx = &txRecord.MsgTx
 	}
 
-	if txRecord.MsgTx.Mweb != nil {
-		for _, output := range txRecord.MsgTx.Mweb.TxBody.Outputs {
+	if tx.Mweb != nil {
+		for _, output := range tx.Mweb.TxBody.Outputs {
 			outpoint, err := existsMwebOutpoint(ns, output.Hash())
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			if outpoint != nil && *outpoint == *op {
-				return output, txRecord, nil
+				return output, nil
 			}
 		}
 	}
-	return nil, nil, nil
+	return nil, nil
 }
 
 // insertMinedTx inserts a new transaction record for a mined transaction into
@@ -939,7 +939,7 @@ func (s *Store) UnspentOutputs2(ns walletdb.ReadBucket, all bool) ([]Credit, err
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
 			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
 		}
-		cred.MwebOutput, _, err = s.GetMwebOutput(ns, &op, rec)
+		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, &rec.MsgTx)
 		if err != nil {
 			return err
 		}
@@ -993,7 +993,7 @@ func (s *Store) UnspentOutputs2(ns walletdb.ReadBucket, all bool) ([]Credit, err
 			FromCoinBase: blockchain.IsCoinBaseTx(&rec.MsgTx),
 			IsMwebPegout: blockchain.IsHogExTx(&rec.MsgTx),
 		}
-		cred.MwebOutput, _, err = s.GetMwebOutput(ns, &op, &rec)
+		cred.MwebOutput, err = s.GetMwebOutput(ns, &op, &rec.MsgTx)
 		if err != nil {
 			return err
 		}
