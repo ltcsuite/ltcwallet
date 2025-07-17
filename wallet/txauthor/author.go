@@ -11,6 +11,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
@@ -151,7 +152,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 		changeScriptSize := changeSource.ScriptSize
 		if isMweb && mwebIn < len(inputs) {
 			outputsToEstimate = []*wire.TxOut{mweb.NewPegin(
-				uint64(inputAmount), &wire.MwebKernel{})}
+				uint64(inputAmount), &chainhash.Hash{})}
 			changeScriptSize = 0
 		}
 
@@ -598,7 +599,7 @@ func (tx *AuthoredTx) AddMweb(secrets SecretsSource,
 	tx.ChangeIndex = -1
 
 	if pegin > 0 {
-		tx.Tx.AddTxOut(mweb.NewPegin(pegin, tx.Tx.Mweb.TxBody.Kernels[0]))
+		tx.Tx.AddTxOut(mweb.NewPegin(pegin, tx.Tx.Mweb.TxBody.Kernels[0].Hash()))
 	}
 
 	return

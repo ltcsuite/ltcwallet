@@ -401,34 +401,37 @@ func addKernelInfo(packet *psbt.Packet, feeRatePerKb ltcutil.Amount) error {
 
 	kernel := psbt.PKernel{}
 
-	// Determine fee
-	txouts := packet.BuildTxOuts()
-	mwebFee := ltcutil.Amount(mweb.EstimateFee(txouts, feeRatePerKb, true))
-	kernel.Fee = &mwebFee
-
-	// Add Pegin
-	if ltcIn > 0 {
-		totalFee := (ltcIn + mwebIn) - (ltcOut + mwebOut)
-
-		ltcFee := totalFee - mwebFee
-		if ltcFee < ltcIn {
-			return errors.New("not enough fee")
-		}
-
-		peginAmount := ltcIn - ltcFee
-		kernel.PeginAmount = &peginAmount
-	}
-
 	// If there are *any* MWEB inputs, all LTC outputs become pegouts.
+	pegoutSum := ltcutil.Amount(0)
 	if ltcOut > 0 && mwebIn > 0 {
+		mwebOutputIdx := 0
 		for _, out := range packet.Outputs {
 			if out.StealthAddress == nil {
+				pegoutSum += out.Amount
 				kernel.PegOuts = append(kernel.PegOuts, &wire.TxOut{
 					Value:    int64(out.Amount),
 					PkScript: out.PKScript,
 				})
+			} else {
+				packet.Outputs[mwebOutputIdx] = out
+				mwebOutputIdx++
 			}
 		}
+
+		// Non-MWEB outputs have become pegouts, and packet.Outputs will now contain only MWEB outputs.
+		packet.Outputs = packet.Outputs[:mwebOutputIdx]
+	}
+
+	// Add Pegin
+	if ltcIn > 0 {
+		mwebFee := ltcutil.Amount(mweb.EstimateFee(packet.BuildTxOuts(), feeRatePerKb, false))
+		peginAmount := (mwebOut + pegoutSum) + mwebFee - mwebIn
+
+		kernel.PeginAmount = &peginAmount
+		kernel.Fee = &mwebFee
+	} else {
+		mwebFee := mwebIn - (mwebOut + pegoutSum)
+		kernel.Fee = &mwebFee
 	}
 
 	packet.Kernels = append(packet.Kernels, kernel)
@@ -535,6 +538,20 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32, packe
 	err := psbt.InputsReadyToSign(packet)
 	if err != nil {
 		return err
+	}
+
+	mwebInputSigner := psbt.BasicMwebInputSigner{
+		DeriveOutputKeys: w.mwebDeriveOutputKeys,
+	}
+	psbtSigner, err := psbt.NewSigner(packet, mwebInputSigner)
+	if err != nil {
+		return fmt.Errorf("error creating PSBT signer: %v", err)
+	}
+	signOutcome, err := psbtSigner.SignMwebComponents()
+	if err != nil {
+		return fmt.Errorf("error during MWEB signing: %v", err)
+	} else if signOutcome != psbt.SignSuccesful {
+		return fmt.Errorf("mweb components not signed successfully")
 	}
 
 	tx, err := psbt.ExtractUnsignedTx(packet)
@@ -658,20 +675,6 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32, packe
 		}
 		packet.Inputs[idx].FinalScriptWitness = witnessBytes.Bytes()
 		packet.Inputs[idx].FinalScriptSig = sigScript
-	}
-
-	mwebInputSigner := psbt.BasicMwebInputSigner{
-		DeriveOutputKeys: w.mwebDeriveOutputKeys,
-	}
-	psbtSigner, err := psbt.NewSigner(packet, mwebInputSigner)
-	if err != nil {
-		return fmt.Errorf("error creating PSBT signer: %v", err)
-	}
-	signOutcome, err := psbtSigner.SignMwebComponents()
-	if err != nil {
-		return fmt.Errorf("error during MWEB signing: %v", err)
-	} else if signOutcome != psbt.SignSuccesful {
-		return fmt.Errorf("mweb components not signed successfully")
 	}
 
 	// Make sure the PSBT itself thinks it's finalized and ready to be
