@@ -13,7 +13,7 @@ require (
 	github.com/ltcsuite/ltcd v0.23.6
 	github.com/ltcsuite/ltcd/btcec/v2 v2.3.2
 	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2
-	github.com/ltcsuite/ltcd/ltcutil v1.1.4
+	github.com/ltcsuite/ltcd/ltcutil v1.1.5-0.20250724031157-a9e8b8c8340e
 	github.com/ltcsuite/ltcd/ltcutil/psbt v1.1.8
 	github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.3
 	github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0
@@ -55,3 +55,9 @@ require (
 go 1.23.0
 
 toolchain go1.24.2
+
+replace github.com/ltcsuite/ltcd/ltcutil/psbt => ../ltcd/ltcutil/psbt
+
+replace github.com/ltcsuite/ltcwallet/wallet/txauthor => ./wallet/txauthor
+
+replace github.com/ltcsuite/ltcwallet/wtxmgr => ./wtxmgr

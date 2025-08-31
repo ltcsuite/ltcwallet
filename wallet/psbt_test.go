@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ltcsuite/ltcd/ltcutil"
-	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -99,7 +98,10 @@ func TestFundPsbt(t *testing.T) {
 					PreviousOutPoint: utxo1,
 				}},
 			},
-			Inputs: []psbt.PInput{{}},
+			Inputs: []psbt.PInput{{
+				PrevoutHash:  &utxo1.Hash,
+				PrevoutIndex: &utxo1.Index,
+			}},
 		},
 		feeRateSatPerKB:         20000,
 		validatePackage:         true,
@@ -170,7 +172,13 @@ func TestFundPsbt(t *testing.T) {
 					Value:    50000,
 				}},
 			},
-			Inputs:  []psbt.PInput{{}, {}},
+			Inputs: []psbt.PInput{{
+				PrevoutHash:  &utxo1.Hash,
+				PrevoutIndex: &utxo1.Index,
+			}, {
+				PrevoutHash:  &utxo2.Hash,
+				PrevoutIndex: &utxo2.Index,
+			}},
 			Outputs: []psbt.POutput{{}, {}},
 		},
 		feeRateSatPerKB:         2000, // 2 sat/byte
@@ -227,7 +235,10 @@ func TestFundPsbt(t *testing.T) {
 					PreviousOutPoint: utxo1,
 				}},
 			},
-			Inputs: []psbt.PInput{{}},
+			Inputs: []psbt.PInput{{
+				PrevoutHash:  &utxo1.Hash,
+				PrevoutIndex: &utxo1.Index,
+			}},
 		},
 		feeRateSatPerKB:         20000,
 		validatePackage:         true,
@@ -468,16 +479,20 @@ func TestFinalizePsbt(t *testing.T) {
 	addUtxo(t, w, incomingTx)
 
 	// Create the packet that we want to sign.
+	incomingTxHash := incomingTx.TxHash()
+	index0 := uint32(0)
+	index1 := uint32(1)
+	
 	packet := &psbt.Packet{
 		UnsignedTx: &wire.MsgTx{
 			TxIn: []*wire.TxIn{{
 				PreviousOutPoint: wire.OutPoint{
-					Hash:  incomingTx.TxHash(),
+					Hash:  incomingTxHash,
 					Index: 0,
 				},
 			}, {
 				PreviousOutPoint: wire.OutPoint{
-					Hash:  incomingTx.TxHash(),
+					Hash:  incomingTxHash,
 					Index: 1,
 				},
 			}},
@@ -493,19 +508,21 @@ func TestFinalizePsbt(t *testing.T) {
 			}},
 		},
 		Inputs: []psbt.PInput{{
-			WitnessUtxo: utxOutP2WKH,
-			SighashType: txscript.SigHashAll,
+			PrevoutHash:    &incomingTxHash,
+			PrevoutIndex:   &index0,
+			WitnessUtxo:    utxOutP2WKH,
+			SighashType:    txscript.SigHashAll,
 		}, {
+			PrevoutHash:    &incomingTxHash,
+			PrevoutIndex:   &index1,
 			NonWitnessUtxo: incomingTx,
 			SighashType:    txscript.SigHashAll,
 		}},
 		Outputs: []psbt.POutput{{}, {}, {}},
 	}
 
-	var mwebKeychain *mweb.Keychain
-
 	// Finalize it to add all witness data then extract the final TX.
-	err = w.FinalizePsbt(nil, 0, mwebKeychain, packet)
+	err = w.FinalizePsbt(nil, 0, packet)
 	if err != nil {
 		t.Fatalf("error finalizing PSBT packet: %v", err)
 	}

@@ -7,7 +7,8 @@ toolchain go1.24.2
 require (
 	github.com/ltcsuite/ltcd v0.23.6
 	github.com/ltcsuite/ltcd/btcec/v2 v2.3.2
-	github.com/ltcsuite/ltcd/ltcutil v1.1.4
+	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2
+	github.com/ltcsuite/ltcd/ltcutil v1.1.5-0.20250724031157-a9e8b8c8340e
 	github.com/ltcsuite/ltcwallet v0.16.9
 	github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0
 	github.com/ltcsuite/ltcwallet/wallet/txsizes v1.2.3
@@ -22,7 +23,6 @@ require (
 	github.com/kkdai/bstream v1.0.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/ltcsuite/lnd/tlv v1.1.1 // indirect
-	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2 // indirect
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.5 // indirect
 	github.com/ltcsuite/neutrino/cache v1.1.0 // indirect
 	github.com/ltcsuite/secp256k1 v0.1.1 // indirect

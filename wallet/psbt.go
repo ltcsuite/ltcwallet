@@ -494,6 +494,7 @@ func createOutputInfo(txOut *wire.TxOut,
 	}
 	out := &psbt.POutput{
 		Amount: ltcutil.Amount(txOut.Value),
+		PKScript: txOut.PkScript,
 		Bip32Derivation: []*psbt.Bip32Derivation{
 			derivation,
 		},
