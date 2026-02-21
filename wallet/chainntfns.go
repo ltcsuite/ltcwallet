@@ -338,18 +338,19 @@ func (w *Wallet) addRelevantTx(dbtx walletdb.ReadWriteTx, rec *wtxmgr.TxRecord,
 	// relevant.  This assumption will not hold true when SPV support is
 	// added, but until then, simply insert the transaction because there
 	// should either be one or more relevant inputs or outputs.
-	exists, err := w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, block)
+	_, err = w.TxStore.InsertTxCheckIfExists(txmgrNs, rec, block)
 	if err != nil {
 		return err
 	}
 
-	// If the transaction has already been recorded, we can return early.
-	// Note: Returning here is safe as we're within the context of an atomic
-	// database transaction, so we don't need to worry about the MarkUsed
-	// calls below.
-	if exists {
-		return nil
-	}
+	// NOTE: We intentionally do NOT return early when the transaction
+	// already exists. The credit-adding loop below must always run because
+	// a transaction may have been inserted by a different code path (or a
+	// previous sync) without its outputs being marked as credits. The
+	// AddCredit function is idempotent - it safely returns early if the
+	// credit already exists. This is especially important for the Electrum
+	// backend where transactions may be discovered across multiple address
+	// scans and the same transaction can be notified more than once.
 
 	isMwebPegout, _, err := w.getMwebPegouts(txmgrNs, rec)
 	if err != nil {
