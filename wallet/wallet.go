@@ -3549,6 +3549,22 @@ func (w *Wallet) sendOutputs(outputs []*wire.TxOut, keyScope *waddrmgr.KeyScope,
 	return createdTx.Tx, nil
 }
 
+// SignMwebSweepTx signs an AuthoredTx that may contain both MWEB and canonical
+// inputs. It first processes MWEB inputs/outputs via AddMweb (building the
+// extension block), then signs the remaining canonical inputs.
+func (w *Wallet) SignMwebSweepTx(tx *txauthor.AuthoredTx,
+	feeRatePerKb ltcutil.Amount) error {
+
+	return walletdb.View(w.db, func(dbTx walletdb.ReadTx) error {
+		addrmgrNs := dbTx.ReadBucket(waddrmgrNamespaceKey)
+		secrets := secretSource{w.Manager, addrmgrNs}
+		if err := tx.AddMweb(secrets, feeRatePerKb); err != nil {
+			return err
+		}
+		return tx.AddAllInputScripts(secrets)
+	})
+}
+
 // SignatureError records the underlying error when validating a transaction
 // input signature.
 type SignatureError struct {
