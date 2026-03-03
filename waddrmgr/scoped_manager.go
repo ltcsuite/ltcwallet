@@ -1433,7 +1433,9 @@ func (s *ScopedKeyManager) extendAddresses(ns walletdb.ReadWriteBucket,
 	// Choose the account key to used based on whether the address manager
 	// is locked.
 	acctKey := acctInfo.acctKeyPub
-	watchOnly := s.rootManager.watchOnly() || acctInfo.acctKeyPriv != nil
+	watchOnly := s.rootManager.watchOnly() ||
+		acctInfo.acctKeyPriv != nil ||
+		acctInfo.acctType == accountWatchOnly
 	if !s.rootManager.isLocked() && !watchOnly {
 		acctKey = acctInfo.acctKeyPriv
 	}
