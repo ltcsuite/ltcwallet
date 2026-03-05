@@ -248,12 +248,20 @@ func (w *Wallet) FundPsbt(packet *psbt.Packet, keyScope *waddrmgr.KeyScope,
 func addInputInfo(w *Wallet, packet *psbt.Packet) error {
 	for idx, _ := range packet.Inputs {
 		in := &packet.Inputs[idx]
-		if in.PrevoutHash == nil || in.PrevoutIndex == nil {
-			if in.MwebOutputId == nil {
-				continue // TODO: Handle MWEB
-			} else {
-				return errors.New("invalid previous outpoint")
+		if in.PrevoutHash == nil && in.PrevoutIndex == nil {
+			if in.MwebOutputId != nil {
+				// Pure MWEB input (no standard prevout).
+				// The MWEB fields (output_id, commit, output_pk, key_exchange_pk,
+				// amount) should already be populated by the creator.
+				// We just need to add the scan/spend key origins and address index.
+				if err := addInputInfoMwebFromOutputId(w, in); err != nil {
+					return err
+				}
 			}
+			continue
+		}
+		if in.PrevoutHash == nil || in.PrevoutIndex == nil {
+			return errors.New("invalid previous outpoint: partially populated")
 		}
 
 		prevOutPoint := wire.OutPoint{Hash: *in.PrevoutHash, Index: *in.PrevoutIndex}
@@ -370,8 +378,152 @@ func addInputInfoMweb(w *Wallet, in *psbt.PInput, prevTx *wire.MsgTx, utxo *wire
 	in.MwebCommit = &mwebOutput.Commitment
 	in.MwebOutputPubkey = &mwebOutput.ReceiverPubKey
 
-	// TODO: MwebMasterScanKey and MwebMasterSpendKey Bip32Derivation's? MwebAddressIndex?
+	// Populate MwebAddressIndex, MwebMasterScanKey, and MwebMasterSpendKey
+	// by looking up the address in the wallet's address manager.
+	if err := populateMwebKeyOrigins(w, in, &mwebOutput.ReceiverPubKey, &mwebOutput.Message.KeyExchangePubKey, nil); err != nil {
+		return err
+	}
+	return validateMwebKeyOrigins(in)
+}
+
+// addInputInfoMwebFromOutputId populates MWEB key origin and address index
+// for pure MWEB inputs that have MwebOutputId but no standard prevout.
+// The MWEB fields (output_id, commit, output_pk, key_exchange_pk, amount)
+// must already be populated by the PSBT creator.
+func addInputInfoMwebFromOutputId(w *Wallet, in *psbt.PInput) error {
+	if in.MwebOutputPubkey == nil {
+		return fmt.Errorf("MWEB input missing output pubkey")
+	}
+	// Accept either key_exchange_pk (0x99) or shared_secret (0x98)
+	if in.MwebKeyExchangePubkey == nil && in.MwebSharedSecret == nil {
+		return fmt.Errorf("MWEB input missing key exchange pubkey and shared secret")
+	}
+
+	if err := populateMwebKeyOrigins(w, in, in.MwebOutputPubkey, in.MwebKeyExchangePubkey, in.MwebSharedSecret); err != nil {
+		return err
+	}
+	return validateMwebKeyOrigins(in)
+}
+
+// validateMwebKeyOrigins checks that all three MWEB key origin fields
+// were populated. Rejects partially-populated state.
+func validateMwebKeyOrigins(in *psbt.PInput) error {
+	if in.MwebMasterScanKey == nil {
+		return fmt.Errorf("failed to resolve MWEB scan key origin")
+	}
+	if in.MwebMasterSpendKey == nil {
+		return fmt.Errorf("failed to resolve MWEB spend key origin")
+	}
+	if in.MwebAddressIndex == nil {
+		return fmt.Errorf("failed to resolve MWEB address index")
+	}
 	return nil
+}
+
+// populateMwebKeyOrigins is the shared implementation for populating
+// MwebAddressIndex, MwebMasterScanKey, and MwebMasterSpendKey on an input.
+// It always re-derives from wallet metadata, overwriting any pre-existing
+// values to prevent accepting externally-supplied origins without verification.
+// Callers must call validateMwebKeyOrigins() after this to ensure all three
+// fields (MwebMasterScanKey, MwebMasterSpendKey, MwebAddressIndex) were set.
+func populateMwebKeyOrigins(w *Wallet, in *psbt.PInput,
+	outputPubkey *mw.PublicKey, keyExchangePubkey *mw.PublicKey,
+	sharedSecret *mw.SecretKey) error {
+
+	// Clear any pre-existing values to force re-derivation from wallet
+	in.MwebMasterScanKey = nil
+	in.MwebMasterSpendKey = nil
+	in.MwebAddressIndex = nil
+
+	return walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		ns := tx.ReadBucket(waddrmgrNamespaceKey)
+		return w.forEachMwebAccount(ns, func(ma *mwebAccount) error {
+			if in.MwebMasterScanKey != nil {
+				return nil // Already derived in a previous account iteration
+			}
+
+			mwebKeychain, err := ma.skm.LoadMwebKeychain(ns, ma.account)
+			if err != nil || mwebKeychain == nil {
+				return err
+			}
+
+			// Derive shared secret if not provided
+			ss := sharedSecret
+			if ss == nil {
+				if keyExchangePubkey == nil {
+					return nil // Need at least one
+				}
+				sharedSecretPk := keyExchangePubkey.Mul(mwebKeychain.Scan)
+				derived := (*mw.SecretKey)(mw.Hashed(mw.HashTagDerive, sharedSecretPk[:]))
+				ss = derived
+			}
+
+			// Reverse-derive the subaddress spend pubkey B_i from output pubkey
+			// Ko = H(O, t) * B_i => B_i = Ko / H(O, t)
+			outKeyHash := (*mw.SecretKey)(mw.Hashed(mw.HashTagOutKey, ss[:]))
+			addrB := outputPubkey.Div(outKeyHash)
+			addrA := addrB.Mul(mwebKeychain.Scan)
+			address := mw.StealthAddress{Scan: addrA, Spend: addrB}
+			addr := ltcutil.NewAddressMweb(&address, w.chainParams)
+
+			// Look up the address in the wallet to get derivation info
+			managedAddr, err := w.Manager.Address(ns, addr)
+			if err != nil {
+				return nil // Not our address in this account, try next
+			}
+
+			pubKeyAddr, ok := managedAddr.(waddrmgr.ManagedPubKeyAddress)
+			if !ok {
+				return nil
+			}
+
+			keyScope, derivationPath, known := pubKeyAddr.DerivationInfo()
+			if !known {
+				return fmt.Errorf("MWEB address has unknown derivation (imported key)")
+			}
+
+			addressIndex := derivationPath.Index
+			in.MwebAddressIndex = &addressIndex
+
+			// Get scan and spend public keys for BIP32 derivation
+			scanPubKey := mwebKeychain.Scan.PubKey()
+			var spendPubKey *mw.PublicKey
+			if mwebKeychain.SpendPubKey != nil {
+				spendPubKey = mwebKeychain.SpendPubKey
+			} else if mwebKeychain.Spend != nil {
+				spendPubKey = mwebKeychain.Spend.PubKey()
+			}
+
+			masterFingerprint := derivationPath.MasterKeyFingerprint
+
+			// Scan key origin: m/1000'/2'/account'/0'
+			// Note: derivationPath.Account is already hardened
+			in.MwebMasterScanKey = &psbt.Bip32Derivation{
+				PubKey:               scanPubKey[:],
+				MasterKeyFingerprint: masterFingerprint,
+				Bip32Path: []uint32{
+					keyScope.Purpose + hdkeychain.HardenedKeyStart,
+					keyScope.Coin + hdkeychain.HardenedKeyStart,
+					derivationPath.Account,
+					hdkeychain.HardenedKeyStart, // branch 0 = scan
+				},
+			}
+
+			// Spend key origin: m/1000'/2'/account'/1'
+			in.MwebMasterSpendKey = &psbt.Bip32Derivation{
+				PubKey:               spendPubKey[:],
+				MasterKeyFingerprint: masterFingerprint,
+				Bip32Path: []uint32{
+					keyScope.Purpose + hdkeychain.HardenedKeyStart,
+					keyScope.Coin + hdkeychain.HardenedKeyStart,
+					derivationPath.Account,
+					hdkeychain.HardenedKeyStart + 1, // branch 1 = spend
+				},
+			}
+
+			return nil
+		})
+	})
 }
 
 func addKernelInfo(packet *psbt.Packet, feeRatePerKb ltcutil.Amount) error {
