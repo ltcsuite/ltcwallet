@@ -210,6 +210,15 @@ var (
 		Coin:    2,
 	}
 
+	// KeyScopeMweb is the standard key scope for MWEB derivation,
+	// The derivation path is m/0'/100' where the coin type key
+	// is the account key (no separate account derivation level).
+	// Scan key is m/0'/100'/0'. Spend key at m/0'/100'/1'.
+	KeyScopeMweb = KeyScope{
+		Purpose: 0,
+		Coin:    100,
+	}
+
 	// KeyScopeLiteWallet is the key scope for LiteWallet derivation.
 	KeyScopeLiteWallet = KeyScope{
 		Purpose: 9999,
@@ -273,6 +282,12 @@ var (
 		InternalAccount: ImportedAddrAccount,
 	}
 )
+
+// IsMwebScope returns true if the given scope is either the standard or legacy
+// MWEB key scope.
+func IsMwebScope(scope KeyScope) bool {
+	return scope == KeyScopeMweb || scope == KeyScopeMwebLegacy
+}
 
 // IsDefaultScope return true if the given scope belongs to the list of default
 // scopes.
@@ -1843,6 +1858,13 @@ func (s *ScopedKeyManager) NewAccount(ns walletdb.ReadWriteBucket, name string) 
 func (s *ScopedKeyManager) newAccount(ns walletdb.ReadWriteBucket,
 	account uint32, name string) error {
 
+	// Standard MWEB scope only supports account 0. Account 1 would
+	// derive m/0'/100'/1' which collides with the spend key path.
+	if s.scope == KeyScopeMweb && account > 0 {
+		str := "standard MWEB scope only supports account 0"
+		return managerError(ErrAccountNumTooHigh, str, nil)
+	}
+
 	// Validate the account name.
 	if err := ValidateAccountName(name); err != nil {
 		return err
@@ -1932,7 +1954,7 @@ func (s *ScopedKeyManager) newAccount(ns walletdb.ReadWriteBucket,
 		str := "failed to encrypt spend key for account"
 		return managerError(ErrCrypto, str, err)
 	}
-	if s.scope != KeyScopeMwebLegacy {
+	if !IsMwebScope(s.scope) {
 		acctScanEnc = nil
 		acctSpendEnc = nil
 	}
@@ -2782,7 +2804,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 	switch net {
 	case wire.MainNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMwebLegacy, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeMwebLegacy, KeyScopeLiteWallet:
 			version = HDVersionMainNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionMainNetBIP0049
@@ -2796,7 +2818,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 		netparams.SigNetWire(s.rootManager.ChainParams()):
 
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMwebLegacy, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeMwebLegacy, KeyScopeLiteWallet:
 			version = HDVersionTestNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionTestNetBIP0049
@@ -2808,7 +2830,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 
 	case wire.SimNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMwebLegacy, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeMwebLegacy, KeyScopeLiteWallet:
 			version = HDVersionSimNetBIP0044
 		// We use the mainnet versions for simnet keys when the keys
 		// belong to a key scope which simnet doesn't have a defined

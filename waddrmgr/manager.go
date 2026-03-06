@@ -1701,6 +1701,12 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 	scope KeyScope, coinType uint32, root *hdkeychain.ExtendedKey,
 	cryptoKeyPub, cryptoKeyPriv EncryptorDecryptor) error {
 
+	// Standard MWEB uses a fixed coin type of 100 to match Litecoin
+	// Core's derivation (m/0'/100'), regardless of chainParams.
+	if scope == KeyScopeMweb {
+		coinType = scope.Coin // 100
+	}
+
 	// Derive the cointype key according to the passed scope.
 	coinTypeKeyPriv, err := deriveCoinTypeKey(root, scope, coinType)
 	if err != nil {
@@ -1714,17 +1720,24 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 
 	// Derive the account key for the first account according our
 	// BIP0044-like derivation.
-	acctKeyPriv, err := deriveAccountKey(coinTypeKeyPriv, 0)
-	if err != nil {
-		// The seed is unusable if the any of the children in the
-		// required hierarchy can't be derived due to invalid child.
-		if err == hdkeychain.ErrInvalidChild {
-			str := "the provided seed is unusable"
-			return managerError(ErrKeyChain, str,
-				hdkeychain.ErrUnusableSeed)
-		}
+	var acctKeyPriv *hdkeychain.ExtendedKey
+	if scope == KeyScopeMweb {
+		// MWEB scan key: m/0'/100'/0'
+		// MWEB spend key: m/0'/100'/1'
+		acctKeyPriv = coinTypeKeyPriv
+	} else {
+		acctKeyPriv, err = deriveAccountKey(coinTypeKeyPriv, 0)
+		if err != nil {
+			// The seed is unusable if the any of the children in the
+			// required hierarchy can't be derived due to invalid child.
+			if err == hdkeychain.ErrInvalidChild {
+				str := "the provided seed is unusable"
+				return managerError(ErrKeyChain, str,
+					hdkeychain.ErrUnusableSeed)
+			}
 
-		return err
+			return err
+		}
 	}
 
 	// Ensure the branch keys can be derived for the provided seed according
@@ -1801,7 +1814,7 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 		str := "failed to encrypt spend key for account 0"
 		return managerError(ErrCrypto, str, err)
 	}
-	if scope != KeyScopeMwebLegacy {
+	if !IsMwebScope(scope) {
 		acctScanEnc = nil
 		acctSpendEnc = nil
 	}
@@ -1818,6 +1831,13 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 		acctScanEnc, acctSpendEnc, 0, 0, defaultAccountName,
 	)
 	if err != nil {
+		return err
+	}
+
+	// Record the last account so that NewAccount can derive the next one.
+	// Without this, fetchLastAccount returns maxUint32 and NewAccount
+	// overflows to account 0 on increment.
+	if err := putLastAccount(ns, &scope, DefaultAccountNum); err != nil {
 		return err
 	}
 
