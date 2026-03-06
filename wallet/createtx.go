@@ -205,7 +205,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 
 			// If selected UTXOs contain MWEB type, set change scope to MWEB
 			if mwebSelected {
-				mwebScope := waddrmgr.KeyScopeMweb
+				mwebScope := waddrmgr.KeyScopeMwebLegacy
 				changeKeyScope = &mwebScope
 			} else {
 				// Otherwise use P2WKH for canonical type

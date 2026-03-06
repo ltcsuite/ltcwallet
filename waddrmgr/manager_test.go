@@ -2089,7 +2089,7 @@ func testManagerCase(t *testing.T, caseName string,
 
 	if !caseCreatedWatchingOnly {
 		// Test MWEB address derivation
-		tc.manager, err = mgr.FetchScopedKeyManager(KeyScopeMweb)
+		tc.manager, err = mgr.FetchScopedKeyManager(KeyScopeMwebLegacy)
 		if err != nil {
 			t.Fatalf("(%s) unable to fetch default scope: %v", caseName, err)
 		}

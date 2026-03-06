@@ -1801,7 +1801,7 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 		str := "failed to encrypt spend key for account 0"
 		return managerError(ErrCrypto, str, err)
 	}
-	if scope != KeyScopeMweb {
+	if scope != KeyScopeMwebLegacy {
 		acctScanEnc = nil
 		acctSpendEnc = nil
 	}

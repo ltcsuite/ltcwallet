@@ -693,7 +693,7 @@ func getNewAddress(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 		case "bech32":
 			keyScope = waddrmgr.KeyScopeBIP0084
 		case "mweb":
-			keyScope = waddrmgr.KeyScopeMweb
+			keyScope = waddrmgr.KeyScopeMwebLegacy
 		case "legacy": // default if unset
 		default:
 			return nil, &ErrAddressTypeUnknown

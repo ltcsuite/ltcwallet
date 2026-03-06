@@ -201,8 +201,11 @@ var (
 		Coin:    2,
 	}
 
-	// KeyScopeMweb is the key scope for MWEB derivation.
-	KeyScopeMweb = KeyScope{
+	// KeyScopeMwebLegacy is the legacy key scope for MWEB derivation.
+	// This uses an incorrect derivation path (m/1000'/2'/account')
+	// that does not match Litecoin Core. Retained for backward
+	// compatibility with existing wallets.
+	KeyScopeMwebLegacy = KeyScope{
 		Purpose: 1000,
 		Coin:    2,
 	}
@@ -220,7 +223,7 @@ var (
 		KeyScopeBIP0084,
 		KeyScopeBIP0086,
 		KeyScopeBIP0044,
-		KeyScopeMweb,
+		KeyScopeMwebLegacy,
 		KeyScopeLiteWallet,
 	}
 
@@ -244,7 +247,7 @@ var (
 			InternalAddrType: PubKeyHash,
 			ExternalAddrType: PubKeyHash,
 		},
-		KeyScopeMweb: {
+		KeyScopeMwebLegacy: {
 			InternalAddrType: Mweb,
 			ExternalAddrType: Mweb,
 		},
@@ -1929,7 +1932,7 @@ func (s *ScopedKeyManager) newAccount(ns walletdb.ReadWriteBucket,
 		str := "failed to encrypt spend key for account"
 		return managerError(ErrCrypto, str, err)
 	}
-	if s.scope != KeyScopeMweb {
+	if s.scope != KeyScopeMwebLegacy {
 		acctScanEnc = nil
 		acctSpendEnc = nil
 	}
@@ -2779,7 +2782,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 	switch net {
 	case wire.MainNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMwebLegacy, KeyScopeLiteWallet:
 			version = HDVersionMainNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionMainNetBIP0049
@@ -2793,7 +2796,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 		netparams.SigNetWire(s.rootManager.ChainParams()):
 
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMwebLegacy, KeyScopeLiteWallet:
 			version = HDVersionTestNetBIP0044
 		case KeyScopeBIP0049Plus:
 			version = HDVersionTestNetBIP0049
@@ -2805,7 +2808,7 @@ func (s *ScopedKeyManager) cloneKeyWithVersion(key *hdkeychain.ExtendedKey) (
 
 	case wire.SimNet:
 		switch s.scope {
-		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMweb, KeyScopeLiteWallet:
+		case KeyScopeBIP0044, KeyScopeBIP0086, KeyScopeMwebLegacy, KeyScopeLiteWallet:
 			version = HDVersionSimNetBIP0044
 		// We use the mainnet versions for simnet keys when the keys
 		// belong to a key scope which simnet doesn't have a defined

@@ -171,7 +171,7 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			} else {
 				maxRequiredFee = ltcutil.Amount(mwebFee)
 			}
-			changeKeyScope = &waddrmgr.KeyScopeMweb
+			changeKeyScope = &waddrmgr.KeyScopeMwebLegacy
 		}
 
 		remainingAmount := inputAmount - targetAmount
