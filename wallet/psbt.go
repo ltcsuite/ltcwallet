@@ -496,29 +496,47 @@ func populateMwebKeyOrigins(w *Wallet, in *psbt.PInput,
 
 			masterFingerprint := derivationPath.MasterKeyFingerprint
 
-			// Scan key origin: m/1000'/2'/account'/0'
-			// Note: derivationPath.Account is already hardened
+			// Build BIP32 derivation paths for scan and spend keys.
+			// Standard MWEB (KeyScopeMweb) uses a 3-level path
+			// m/0'/100'/keytype' matching Litecoin Core. Legacy
+			// (KeyScopeMwebLegacy) uses the 4-level BIP44-style
+			// path m/1000'/2'/account'/keytype'.
+			var scanPath, spendPath []uint32
+			if keyScope == waddrmgr.KeyScopeMweb {
+				scanPath = []uint32{
+					hdkeychain.HardenedKeyStart,       // 0'
+					100 + hdkeychain.HardenedKeyStart, // 100'
+					hdkeychain.HardenedKeyStart,       // 0' (scan)
+				}
+				spendPath = []uint32{
+					hdkeychain.HardenedKeyStart,       // 0'
+					100 + hdkeychain.HardenedKeyStart, // 100'
+					hdkeychain.HardenedKeyStart + 1,   // 1' (spend)
+				}
+			} else {
+				scanPath = []uint32{
+					keyScope.Purpose + hdkeychain.HardenedKeyStart,
+					keyScope.Coin + hdkeychain.HardenedKeyStart,
+					derivationPath.Account,
+					hdkeychain.HardenedKeyStart,
+				}
+				spendPath = []uint32{
+					keyScope.Purpose + hdkeychain.HardenedKeyStart,
+					keyScope.Coin + hdkeychain.HardenedKeyStart,
+					derivationPath.Account,
+					hdkeychain.HardenedKeyStart + 1,
+				}
+			}
+
 			in.MwebMasterScanKey = &psbt.Bip32Derivation{
 				PubKey:               scanPubKey[:],
 				MasterKeyFingerprint: masterFingerprint,
-				Bip32Path: []uint32{
-					keyScope.Purpose + hdkeychain.HardenedKeyStart,
-					keyScope.Coin + hdkeychain.HardenedKeyStart,
-					derivationPath.Account,
-					hdkeychain.HardenedKeyStart, // branch 0 = scan
-				},
+				Bip32Path:            scanPath,
 			}
-
-			// Spend key origin: m/1000'/2'/account'/1'
 			in.MwebMasterSpendKey = &psbt.Bip32Derivation{
 				PubKey:               spendPubKey[:],
 				MasterKeyFingerprint: masterFingerprint,
-				Bip32Path: []uint32{
-					keyScope.Purpose + hdkeychain.HardenedKeyStart,
-					keyScope.Coin + hdkeychain.HardenedKeyStart,
-					derivationPath.Account,
-					hdkeychain.HardenedKeyStart + 1, // branch 1 = spend
-				},
+				Bip32Path:            spendPath,
 			}
 
 			return nil
@@ -632,20 +650,33 @@ func createOutputInfo(txOut *wire.TxOut,
 			"derivation path")
 	}
 
-	// Include the derivation path for this output.
-	derivation := &psbt.Bip32Derivation{
-		PubKey:               addr.PubKey().SerializeCompressed(),
-		MasterKeyFingerprint: derivationPath.MasterKeyFingerprint,
-		Bip32Path: []uint32{
+	// Include the derivation path for this output. Standard MWEB uses
+	// a shorter path because the coin type key IS the account key
+	// (no separate account derivation level).
+	var bip32Path []uint32
+	if keyScope == waddrmgr.KeyScopeMweb {
+		bip32Path = []uint32{
+			hdkeychain.HardenedKeyStart,       // 0'
+			100 + hdkeychain.HardenedKeyStart, // 100'
+			derivationPath.Branch,
+			derivationPath.Index,
+		}
+	} else {
+		bip32Path = []uint32{
 			keyScope.Purpose + hdkeychain.HardenedKeyStart,
 			keyScope.Coin + hdkeychain.HardenedKeyStart,
 			derivationPath.Account,
 			derivationPath.Branch,
 			derivationPath.Index,
-		},
+		}
+	}
+	derivation := &psbt.Bip32Derivation{
+		PubKey:               addr.PubKey().SerializeCompressed(),
+		MasterKeyFingerprint: derivationPath.MasterKeyFingerprint,
+		Bip32Path:            bip32Path,
 	}
 	out := &psbt.POutput{
-		Amount: ltcutil.Amount(txOut.Value),
+		Amount:   ltcutil.Amount(txOut.Value),
 		PKScript: txOut.PkScript,
 		Bip32Derivation: []*psbt.Bip32Derivation{
 			derivation,
@@ -891,8 +922,6 @@ func (w *Wallet) mwebDeriveOutputKeys(spentOutputPk *mw.PublicKey, keyExchangePu
 
 			mwebKeychain, err := ma.skm.LoadMwebKeychain(ns, ma.account)
 			if mwebKeychain != nil {
-				fmt.Printf("Master Scan: %x, Master Spend: %x\n", *mwebKeychain.Scan, *mwebKeychain.Spend)
-
 				sharedSecret := spentOutputSharedSecret
 				if sharedSecret == nil {
 					if keyExchangePubKey == nil {

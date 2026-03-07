@@ -152,6 +152,9 @@ func (w *Wallet) FetchInputInfo(prevOut *wire.OutPoint) (*wire.MsgTx,
 		confs = int64(currentHeight - txDetail.Block.Height)
 	}
 
+	// Note: MWEB inputs use addInputInfoMweb (not this path), which
+	// handles the 3-level vs 4-level BIP32 path distinction for
+	// KeyScopeMweb vs KeyScopeMwebLegacy.
 	return &txDetail.TxRecord.MsgTx, &wire.TxOut{
 			Value:    txDetail.TxRecord.MsgTx.TxOut[prevOut.Index].Value,
 			PkScript: pkScript,
