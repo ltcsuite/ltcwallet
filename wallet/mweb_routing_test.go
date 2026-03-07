@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/wire"
@@ -256,4 +257,133 @@ func generateMwebOutputInfo(t *testing.T, w *Wallet,
 		t.Fatal("expected StealthAddress to be set for MWEB output")
 	}
 	return out
+}
+
+// TestMwebMigrationIdempotency verifies that calling ensureMwebStandardScope
+// multiple times on an already-migrated wallet produces no errors and
+// does not create duplicate scopes.
+func TestMwebMigrationIdempotency(t *testing.T) {
+	t.Parallel()
+
+	// Legacy wallet, unlocked → migration runs during unlock
+	w, cleanup := testMwebWallet(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), true)
+	defer cleanup()
+
+	// Verify standard scope exists after first migration
+	if _, err := w.Manager.FetchScopedKeyManager(waddrmgr.KeyScopeMweb); err != nil {
+		t.Fatalf("standard scope missing after first migration: %v", err)
+	}
+
+	// Run migration again — must be idempotent
+	if err := w.ensureMwebStandardScope(); err != nil {
+		t.Fatalf("second migration failed: %v", err)
+	}
+
+	// Standard scope still present
+	if _, err := w.Manager.FetchScopedKeyManager(waddrmgr.KeyScopeMweb); err != nil {
+		t.Fatalf("standard scope missing after second migration: %v", err)
+	}
+
+	// Third time for good measure
+	if err := w.ensureMwebStandardScope(); err != nil {
+		t.Fatalf("third migration failed: %v", err)
+	}
+}
+
+// TestMwebDualScopeAddresses verifies that after migration, both MWEB
+// scopes exist and produce different valid MWEB addresses.
+func TestMwebDualScopeAddresses(t *testing.T) {
+	t.Parallel()
+
+	// Legacy wallet, unlocked → both scopes exist
+	w, cleanup := testMwebWallet(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), true)
+	defer cleanup()
+
+	legacyMgr, err := w.Manager.FetchScopedKeyManager(waddrmgr.KeyScopeMwebLegacy)
+	if err != nil {
+		t.Fatalf("legacy scope missing: %v", err)
+	}
+	stdMgr, err := w.Manager.FetchScopedKeyManager(waddrmgr.KeyScopeMweb)
+	if err != nil {
+		t.Fatalf("standard scope missing: %v", err)
+	}
+
+	var legacyAddr, stdAddr ltcutil.Address
+	err = walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+		ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+		addrs, err := legacyMgr.NextExternalAddresses(ns, 0, 1)
+		if err != nil {
+			return err
+		}
+		legacyAddr = addrs[0].Address()
+
+		addrs, err = stdMgr.NextExternalAddresses(ns, 0, 1)
+		if err != nil {
+			return err
+		}
+		stdAddr = addrs[0].Address()
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("address derivation: %v", err)
+	}
+
+	// Both must be MWEB addresses
+	if _, ok := legacyAddr.(*ltcutil.AddressMweb); !ok {
+		t.Error("legacy address is not AddressMweb")
+	}
+	if _, ok := stdAddr.(*ltcutil.AddressMweb); !ok {
+		t.Error("standard address is not AddressMweb")
+	}
+
+	// Must be different (different derivation paths → different keys)
+	if legacyAddr.EncodeAddress() == stdAddr.EncodeAddress() {
+		t.Error("legacy and standard addresses must differ")
+	}
+}
+
+// TestMwebMigrationCreatesKeyPool verifies that after migration,
+// the standard MWEB scope has an initialized keypool. The legacy
+// scope's keypool is created during syncWithChain, not migration,
+// so we only check the standard keypool here.
+func TestMwebMigrationCreatesKeyPool(t *testing.T) {
+	t.Parallel()
+
+	w, cleanup := testMwebWallet(t, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), true)
+	defer cleanup()
+
+	var stdFound bool
+	err := w.forEachMwebKeyPool(func(key skmAccount, kp *mwebKeyPool) error {
+		if key.skm.Scope() == waddrmgr.KeyScopeMweb {
+			stdFound = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("forEachMwebKeyPool: %v", err)
+	}
+	if !stdFound {
+		t.Error("no keypool for standard MWEB scope after migration")
+	}
+}
+
+// TestMwebNewWalletHasNoLegacyScope verifies that a wallet created
+// after the activation date has only the standard scope, not legacy.
+func TestMwebNewWalletHasNoLegacyScope(t *testing.T) {
+	t.Parallel()
+
+	w, cleanup := testMwebWallet(t, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), true)
+	defer cleanup()
+
+	if _, err := w.Manager.FetchScopedKeyManager(waddrmgr.KeyScopeMweb); err != nil {
+		t.Fatalf("standard scope should exist: %v", err)
+	}
+	if _, err := w.Manager.FetchScopedKeyManager(waddrmgr.KeyScopeMwebLegacy); err == nil {
+		t.Error("legacy scope should NOT exist for post-activation wallet")
+	}
+
+	// Migration should be a no-op (no legacy scope to migrate from)
+	if err := w.ensureMwebStandardScope(); err != nil {
+		t.Fatalf("ensureMwebStandardScope on new wallet failed: %v", err)
+	}
 }
