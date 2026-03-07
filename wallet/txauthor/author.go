@@ -78,6 +78,10 @@ type ChangeSource struct {
 
 	// ScriptSize is the size in bytes of scripts produced by `NewScript`.
 	ScriptSize int
+
+	// MwebScope is the preferred MWEB key scope for change outputs when
+	// MWEB inputs are present. If nil, falls back to KeyScopeMwebLegacy.
+	MwebScope *waddrmgr.KeyScope
 }
 
 // NewUnsignedTransaction creates an unsigned transaction paying to one or more
@@ -171,7 +175,11 @@ func NewUnsignedTransaction(outputs []*wire.TxOut, feeRatePerKb ltcutil.Amount,
 			} else {
 				maxRequiredFee = ltcutil.Amount(mwebFee)
 			}
-			changeKeyScope = &waddrmgr.KeyScopeMwebLegacy
+			changeKeyScope = changeSource.MwebScope
+			if changeKeyScope == nil {
+				fallback := waddrmgr.KeyScopeMwebLegacy
+				changeKeyScope = &fallback
+			}
 		}
 
 		remainingAmount := inputAmount - targetAmount

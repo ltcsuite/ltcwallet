@@ -33,6 +33,49 @@ type (
 	}
 )
 
+// preferredMwebScope returns the MWEB key scope to use for address
+// generation and change outputs. Returns KeyScopeMweb (standard) if it
+// exists and the account is 0, otherwise falls back to KeyScopeMwebLegacy.
+func (w *Wallet) preferredMwebScope(account uint32) waddrmgr.KeyScope {
+	if account == 0 {
+		if _, err := w.Manager.FetchScopedKeyManager(
+			waddrmgr.KeyScopeMweb,
+		); err == nil {
+			return waddrmgr.KeyScopeMweb
+		}
+	}
+	return waddrmgr.KeyScopeMwebLegacy
+}
+
+// ResolveMwebScopeAndAccount resolves an account name to a scope and
+// account number for MWEB RPCs. It tries the legacy scope first (which
+// has any renamed accounts from pre-migration wallets), then falls back
+// to the standard scope only if the legacy scope does not exist (new
+// wallet).
+func (w *Wallet) ResolveMwebScopeAndAccount(acctName string) (
+	waddrmgr.KeyScope, uint32, error,
+) {
+	// Try legacy scope first — always exists for legacy wallets,
+	// and has any user-renamed accounts.
+	account, err := w.AccountNumber(waddrmgr.KeyScopeMwebLegacy, acctName)
+	if err == nil {
+		return w.preferredMwebScope(account), account, nil
+	}
+	// Only fall back to the standard scope if the legacy scope itself
+	// does not exist (new wallet). Other errors like "account not found"
+	// must propagate — otherwise a renamed legacy account would
+	// incorrectly resolve to the standard scope's "default" account.
+	if !waddrmgr.IsError(err, waddrmgr.ErrScopeNotFound) {
+		return waddrmgr.KeyScope{}, 0, err
+	}
+	// Legacy scope absent — this is a new wallet with only KeyScopeMweb.
+	account, err = w.AccountNumber(waddrmgr.KeyScopeMweb, acctName)
+	if err != nil {
+		return waddrmgr.KeyScope{}, 0, err
+	}
+	return waddrmgr.KeyScopeMweb, account, nil
+}
+
 func (w *Wallet) forEachMwebAccount(addrmgrNs walletdb.ReadBucket,
 	fn func(*mwebAccount) error) error {
 

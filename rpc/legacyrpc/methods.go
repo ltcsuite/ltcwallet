@@ -693,7 +693,19 @@ func getNewAddress(icmd interface{}, w *wallet.Wallet) (interface{}, error) {
 		case "bech32":
 			keyScope = waddrmgr.KeyScopeBIP0084
 		case "mweb":
-			keyScope = waddrmgr.KeyScopeMwebLegacy
+			// MWEB uses name-aware scope resolution: resolve the
+			// account name in the legacy scope first (which has
+			// any renamed accounts), get the account number, then
+			// route to the preferred scope for that number.
+			scope, account, err := w.ResolveMwebScopeAndAccount(acctName)
+			if err != nil {
+				return nil, err
+			}
+			addr, err := w.NewAddress(account, scope)
+			if err != nil {
+				return nil, err
+			}
+			return addr.EncodeAddress(), nil
 		case "legacy": // default if unset
 		default:
 			return nil, &ErrAddressTypeUnknown

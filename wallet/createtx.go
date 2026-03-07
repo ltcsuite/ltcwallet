@@ -205,7 +205,7 @@ func (w *Wallet) txToOutputs(outputs []*wire.TxOut,
 
 			// If selected UTXOs contain MWEB type, set change scope to MWEB
 			if mwebSelected {
-				mwebScope := waddrmgr.KeyScopeMwebLegacy
+				mwebScope := w.preferredMwebScope(account)
 				changeKeyScope = &mwebScope
 			} else {
 				// Otherwise use P2WKH for canonical type
@@ -577,9 +577,11 @@ func (w *Wallet) addrMgrWithChangeSource(dbtx walletdb.ReadWriteTx,
 		return txscript.PayToAddrScript(changeAddr)
 	}
 
+	preferred := w.preferredMwebScope(account)
 	return addrmgrNs, &txauthor.ChangeSource{
 		ScriptSize: scriptSize,
 		NewScript:  newChangeScript,
+		MwebScope:  &preferred,
 	}, nil
 }
 
