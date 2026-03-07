@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math/big"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -150,9 +151,17 @@ func (w *Wallet) rewindOutput(addrmgrNs walletdb.ReadWriteBucket,
 		return nil, nil, nil
 	}
 	addr = ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-	ok, err := w.mwebKeyPools[ma.skmAccount].contains(addrmgrNs, addr)
-	if !ok {
+	kp, err := w.getOrInitMwebKeyPool(ma.skmAccount, addrmgrNs, ma)
+	if err != nil {
+		log.Warnf("MWEB keypool init failed for scope %v "+
+			"account %d: %v", ma.skm.Scope(), ma.account, err)
+		return nil, nil, nil
+	}
+	if found, err := kp.contains(addrmgrNs, addr); !found {
 		coin = nil
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	return
 }
@@ -463,7 +472,75 @@ func (w *Wallet) putMwebLeafset(addrmgrNs walletdb.ReadWriteBucket,
 	return mwebLeafsets.Put(k, buf.Bytes())
 }
 
+// ensureMwebStandardScope creates KeyScopeMweb for legacy wallets that
+// were originally created with only KeyScopeMwebLegacy. Called after
+// unlock so the master root private key is available for derivation.
+//
+// The migration is split into two steps to be robust against partial
+// failure: (1) create the scope in the DB, (2) initialize the keypool.
+// Each step is idempotent, so if step 2 fails on one unlock, the next
+// unlock will find the scope already in the DB and only retry the
+// keypool initialization.
+func (w *Wallet) ensureMwebStandardScope() error {
+	// Only migrate wallets that have the legacy MWEB scope.
+	if _, err := w.Manager.FetchScopedKeyManager(
+		waddrmgr.KeyScopeMwebLegacy,
+	); err != nil {
+		return nil
+	}
+
+	// Watch-only wallets cannot derive new scopes.
+	if w.Manager.WatchOnly() {
+		return nil
+	}
+
+	// Step 1: Ensure the scope exists in the DB and in memory.
+	// If it already exists (from a previous unlock or initial creation),
+	// NewScopedKeyManager will fail and we skip to step 2.
+	if _, err := w.Manager.FetchScopedKeyManager(
+		waddrmgr.KeyScopeMweb,
+	); err != nil {
+		err := walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+			addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+			_, err := w.Manager.NewScopedKeyManager(
+				addrmgrNs, waddrmgr.KeyScopeMweb,
+				waddrmgr.ScopeAddrMap[waddrmgr.KeyScopeMweb],
+			)
+			if err != nil {
+				if waddrmgr.IsError(err, waddrmgr.ErrWatchingOnly) ||
+					waddrmgr.IsError(err, waddrmgr.ErrLocked) {
+					return nil
+				}
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	// Step 2: Ensure keypools exist for the standard scope.
+	// This is separate so that if step 1 succeeded but keypool init
+	// failed on a previous attempt, we retry only the keypool part.
+	// Uses getOrInitMwebKeyPool for atomic check-and-create.
+	return walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		ns := tx.ReadBucket(waddrmgrNamespaceKey)
+		return w.forEachMwebAccount(ns, func(ma *mwebAccount) error {
+			if ma.skm.Scope() != waddrmgr.KeyScopeMweb {
+				return nil
+			}
+			_, err := w.getOrInitMwebKeyPool(
+				ma.skmAccount, ns, ma,
+			)
+			return err
+		})
+	})
+}
+
 type mwebKeyPool struct {
+	mu sync.Mutex
+
 	mwebAccount
 	index    uint32
 	keychain *mweb.Keychain
@@ -491,20 +568,29 @@ func newMwebKeyPool(addrmgrNs walletdb.ReadBucket,
 			SpendPubKey: (*mw.PublicKey)(spendPubKey.SerializeCompressed()),
 		},
 	}
-	kp.topUp()
+	kp.topUpLocked() // safe: pool not yet shared
 
 	return kp, nil
 }
 
-func (kp *mwebKeyPool) topUp() {
+// topUpLocked fills the address pool up to 1000 entries.
+// Caller must hold kp.mu (or guarantee single-goroutine access).
+func (kp *mwebKeyPool) topUpLocked() {
 	for len(kp.addrs) < 1000 {
 		index := kp.index + uint32(len(kp.addrs))
 		kp.addrs = append(kp.addrs, kp.keychain.Address(index))
 	}
 }
 
+// contains checks whether addr belongs to this key pool and, if found
+// in the lookahead window, extends the address manager to include it.
+// The pool mutex is held for the entire operation to protect kp.index
+// and kp.addrs from concurrent mutation.
 func (kp *mwebKeyPool) contains(addrmgrNs walletdb.ReadWriteBucket,
 	addr *ltcutil.AddressMweb) (bool, error) {
+
+	kp.mu.Lock()
+	defer kp.mu.Unlock()
 
 	switch _, err := kp.skm.Address(addrmgrNs, addr); {
 	case err == nil:
@@ -526,7 +612,7 @@ func (kp *mwebKeyPool) contains(addrmgrNs walletdb.ReadWriteBucket,
 
 	kp.index += uint32(index + 1)
 	kp.addrs = kp.addrs[index+1:]
-	kp.topUp()
+	kp.topUpLocked()
 
 	return true, nil
 }

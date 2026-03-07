@@ -74,8 +74,14 @@ func TestMwebStandardDerivationMatchesCore(t *testing.T) {
 	t.Parallel()
 
 	// Verify test vectors are self-consistent with hdkeychain.
+	// Use a fresh root key to avoid racing on the shared rootKey's
+	// lazily-cached pubkey bytes when tests run in parallel.
 	const H = hdkeychain.HardenedKeyStart
-	acctKey, err := rootKey.DeriveNonStandard(H) // m/0'
+	localRoot, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		t.Fatalf("NewMaster: %v", err)
+	}
+	acctKey, err := localRoot.DeriveNonStandard(H) // m/0'
 	if err != nil {
 		t.Fatalf("derive m/0': %v", err)
 	}
@@ -219,9 +225,13 @@ func TestMwebStandardVsLegacyDifference(t *testing.T) {
 	t.Parallel()
 
 	const H = hdkeychain.HardenedKeyStart
+	localRoot, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+	if err != nil {
+		t.Fatalf("NewMaster: %v", err)
+	}
 
 	// Legacy path: m/1000'/2'/0'/0' (scan)
-	purposeKey, _ := rootKey.DeriveNonStandard(H + 1000)
+	purposeKey, _ := localRoot.DeriveNonStandard(H + 1000)
 	coinTypeKey, _ := purposeKey.DeriveNonStandard(H + 2)
 	acctKey, _ := deriveAccountKey(coinTypeKey, 0)
 	legacyScan, _ := acctKey.Derive(H)
@@ -356,15 +366,22 @@ func TestMwebScopeFilteringByBirthday(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Create a fresh rootKey per sub-test to avoid a race on
+			// the shared rootKey's lazily-cached pubkey bytes.
+			localRoot, err := hdkeychain.NewMaster(seed, &chaincfg.MainNetParams)
+			if err != nil {
+				t.Fatalf("NewMaster: %v", err)
+			}
+
 			teardown, db := emptyDB(t)
 			defer teardown()
 
-			err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
+			err = walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
 				ns, err := tx.CreateTopLevelBucket(waddrmgrNamespaceKey)
 				if err != nil {
 					return err
 				}
-				return Create(ns, rootKey, pubPassphrase, privPassphrase,
+				return Create(ns, localRoot, pubPassphrase, privPassphrase,
 					&chaincfg.MainNetParams, fastScrypt, tc.birthday)
 			})
 			if err != nil {

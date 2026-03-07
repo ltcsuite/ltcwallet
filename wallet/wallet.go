@@ -158,7 +158,65 @@ type Wallet struct {
 	// errors during initial sync.
 	syncRetryInterval time.Duration
 
-	mwebKeyPools map[skmAccount]*mwebKeyPool
+	mwebKeyPoolsMu sync.RWMutex
+	mwebKeyPools   map[skmAccount]*mwebKeyPool
+}
+
+func (w *Wallet) getMwebKeyPool(key skmAccount) (*mwebKeyPool, bool) {
+	w.mwebKeyPoolsMu.RLock()
+	defer w.mwebKeyPoolsMu.RUnlock()
+	kp, ok := w.mwebKeyPools[key]
+	return kp, ok
+}
+
+func (w *Wallet) setMwebKeyPool(key skmAccount, kp *mwebKeyPool) {
+	w.mwebKeyPoolsMu.Lock()
+	defer w.mwebKeyPoolsMu.Unlock()
+	w.mwebKeyPools[key] = kp
+}
+
+// getOrInitMwebKeyPool returns the existing keypool for the given account,
+// or atomically creates and stores a new one if absent. This prevents two
+// goroutines from both creating a fresh pool and one overwriting the
+// other's already-advanced state.
+func (w *Wallet) getOrInitMwebKeyPool(
+	key skmAccount, ns walletdb.ReadBucket, ma *mwebAccount,
+) (*mwebKeyPool, error) {
+
+	w.mwebKeyPoolsMu.Lock()
+	defer w.mwebKeyPoolsMu.Unlock()
+
+	if kp, ok := w.mwebKeyPools[key]; ok {
+		return kp, nil
+	}
+	kp, err := newMwebKeyPool(ns, ma)
+	if err != nil {
+		return nil, err
+	}
+	w.mwebKeyPools[key] = kp
+	return kp, nil
+}
+
+func (w *Wallet) forEachMwebKeyPool(fn func(skmAccount, *mwebKeyPool) error) error {
+	// Snapshot pointers under RLock, then release before callbacks
+	// to avoid holding the map lock while pool mutexes are taken.
+	w.mwebKeyPoolsMu.RLock()
+	type entry struct {
+		key skmAccount
+		kp  *mwebKeyPool
+	}
+	snapshot := make([]entry, 0, len(w.mwebKeyPools))
+	for k, v := range w.mwebKeyPools {
+		snapshot = append(snapshot, entry{k, v})
+	}
+	w.mwebKeyPoolsMu.RUnlock()
+
+	for _, e := range snapshot {
+		if err := fn(e.key, e.kp); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Start starts the goroutines necessary to manage a wallet.
@@ -556,7 +614,7 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) (
 			if err != nil {
 				return err
 			}
-			w.mwebKeyPools[ma.skmAccount] = kp
+			w.setMwebKeyPool(ma.skmAccount, kp)
 			return nil
 		})
 		if err != nil {
@@ -1399,6 +1457,11 @@ out:
 			if err != nil {
 				req.err <- err
 				continue
+			}
+			// Migrate legacy MWEB wallets to the standard scope
+			// on first unlock. Non-fatal on failure.
+			if migErr := w.ensureMwebStandardScope(); migErr != nil {
+				log.Errorf("Failed to migrate MWEB standard scope: %v", migErr)
 			}
 			timeout = req.lockAfter
 			if timeout == nil {
@@ -3787,10 +3850,12 @@ func (w *Wallet) reliablyPublishTransaction(tx *wire.MsgTx,
 
 		for _, coin := range newMwebCoins {
 			addr := ltcutil.NewAddressMweb(coin.Address, w.chainParams)
-			for _, kp := range w.mwebKeyPools {
-				if _, err = kp.contains(addrmgrNs, addr); err != nil {
-					return err
-				}
+			err = w.forEachMwebKeyPool(func(_ skmAccount, kp *mwebKeyPool) error {
+				_, err := kp.contains(addrmgrNs, addr)
+				return err
+			})
+			if err != nil {
+				return err
 			}
 			err = w.addMwebOutpoint(txmgrNs, txRec, int64(coin.Value),
 				addr.ScriptAddress(), coin.OutputId)
