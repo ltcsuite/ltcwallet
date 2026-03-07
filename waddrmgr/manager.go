@@ -54,6 +54,13 @@ const (
 	// used to refer to (and only to) the default account.
 	defaultAccountName = "default"
 
+	// MwebStandardActivationDays is the aezeed day number at which new
+	// wallets start using KeyScopeMweb (the standard MWEB derivation
+	// path) instead of KeyScopeMwebLegacy. aezeed days are 24-hour
+	// intervals from Bitcoin genesis (2009-01-03 18:15:05 UTC), so
+	// day 6296 starts at 2026-03-31 18:15:05 UTC.
+	MwebStandardActivationDays = 6296
+
 	// The hierarchy described by BIP0043 is:
 	//  m/<purpose>'/*
 	// This is further extended by BIP0044 to:
@@ -81,6 +88,48 @@ const (
 	// private passphrases.
 	saltSize = 32
 )
+
+var (
+	// BitcoinGenesisTime is the timestamp of the Bitcoin genesis block.
+	// aezeed birthdays are encoded as whole-day offsets from this time,
+	// so day boundaries fall at 18:15:05 UTC, not midnight.
+	BitcoinGenesisTime = time.Date(2009, 1, 3, 18, 15, 5, 0, time.UTC)
+)
+
+// aezeedBirthdayDay returns the aezeed day number for the given time —
+// the number of complete 24-hour periods since Bitcoin genesis. This
+// matches how aezeed encodes and decodes birthdays, ensuring that both
+// time.Now() (used at wallet creation) and cipherSeed.BirthdayTime()
+// (used at restore) produce the same day number for the same seed.
+func aezeedBirthdayDay(t time.Time) int {
+	return int(t.Sub(BitcoinGenesisTime) / (24 * time.Hour))
+}
+
+// filteredScopesForCreation returns the ordered list of scopes to create
+// for a new wallet, filtering MWEB scopes based on the wallet birthday.
+// New wallets (aezeed day >= activation day) get KeyScopeMweb only.
+// Legacy wallets get KeyScopeMwebLegacy only; KeyScopeMweb is added
+// later via migration on first unlock.
+//
+// The comparison uses aezeed day numbers (24-hour intervals from Bitcoin
+// genesis at 18:15:05 UTC) to ensure create-vs-restore consistency.
+func filteredScopesForCreation(birthday time.Time) []scopeSpec {
+	isLegacy := aezeedBirthdayDay(birthday) < MwebStandardActivationDays
+	specs := make([]scopeSpec, 0, len(DefaultKeyScopes))
+	for _, scope := range DefaultKeyScopes {
+		if scope == KeyScopeMwebLegacy && !isLegacy {
+			continue
+		}
+		if scope == KeyScopeMweb && isLegacy {
+			continue
+		}
+		specs = append(specs, scopeSpec{
+			Scope:  scope,
+			Schema: ScopeAddrMap[scope],
+		})
+	}
+	return specs
+}
 
 // isReservedAccountName returns true if the account name is reserved.
 // Reserved accounts may never be renamed, and other accounts may not be
@@ -1895,11 +1944,13 @@ func Create(ns walletdb.ReadWriteBucket, rootKey *hdkeychain.ExtendedKey,
 	}
 
 	// Perform the initial bucket creation and database namespace setup.
-	defaultScopes := map[KeyScope]ScopeAddrSchema{}
+	// Filter MWEB scopes based on the wallet birthday: new wallets get
+	// KeyScopeMweb, legacy wallets get KeyScopeMwebLegacy.
+	var specs []scopeSpec
 	if !isWatchingOnly {
-		defaultScopes = ScopeAddrMap
+		specs = filteredScopesForCreation(birthday)
 	}
-	if err := createManagerNS(ns, defaultScopes); err != nil {
+	if err := createManagerNS(ns, specs); err != nil {
 		return maybeConvertDbError(err)
 	}
 
@@ -2001,12 +2052,12 @@ func Create(ns walletdb.ReadWriteBucket, rootKey *hdkeychain.ExtendedKey,
 			return managerError(ErrKeyChain, str, err)
 		}
 
-		// Next, for each registers default manager scope, we'll
-		// create the hardened cointype key for it, as well as the
-		// first default account.
-		for _, defaultScope := range DefaultKeyScopes {
+		// Next, for each filtered scope, create the hardened cointype
+		// key and the first default account.
+		for _, spec := range specs {
 			err := createManagerKeyScope(
-				ns, defaultScope, chainParams.HDCoinType, rootKey, cryptoKeyPub, cryptoKeyPriv,
+				ns, spec.Scope, chainParams.HDCoinType,
+				rootKey, cryptoKeyPub, cryptoKeyPriv,
 			)
 			if err != nil {
 				return maybeConvertDbError(err)

@@ -2611,7 +2611,7 @@ func createScopedManagerNS(ns walletdb.ReadWriteBucket, scope *KeyScope) error {
 // the root address manager, we'll also create internal scopes for all the
 // default manager scope types.
 func createManagerNS(ns walletdb.ReadWriteBucket,
-	defaultScopes map[KeyScope]ScopeAddrSchema) error {
+	defaultScopes []scopeSpec) error {
 
 	// First, we'll create all the relevant buckets that stem off of the
 	// main bucket.
@@ -2641,25 +2641,23 @@ func createManagerNS(ns walletdb.ReadWriteBucket,
 
 	// Next, we'll create the namespace for each of the relevant default
 	// manager scopes.
-	for scope, scopeSchema := range defaultScopes {
-		scope, scopeSchema := scope, scopeSchema
-
+	for _, spec := range defaultScopes {
 		// Before we create the entire namespace of this scope, we'll
 		// update the schema mapping to note what types of addresses it
 		// prefers.
-		scopeKey := scopeToBytes(&scope)
-		schemaBytes := scopeSchemaToBytes(&scopeSchema)
+		scopeKey := scopeToBytes(&spec.Scope)
+		schemaBytes := scopeSchemaToBytes(&spec.Schema)
 		err := scopeSchemas.Put(scopeKey[:], schemaBytes)
 		if err != nil {
 			return err
 		}
 
-		err = createScopedManagerNS(scopeBucket, &scope)
+		err = createScopedManagerNS(scopeBucket, &spec.Scope)
 		if err != nil {
 			return err
 		}
 
-		err = putLastAccount(ns, &scope, DefaultAccountNum)
+		err = putLastAccount(ns, &spec.Scope, DefaultAccountNum)
 		if err != nil {
 			return err
 		}

@@ -226,13 +226,15 @@ var (
 	}
 
 	// DefaultKeyScopes is the set of default key scopes that will be
-	// created by the root manager upon initial creation.
+	// created by the root manager upon initial creation. The order is
+	// deterministic and used by filteredScopesForCreation.
 	DefaultKeyScopes = []KeyScope{
 		KeyScopeBIP0049Plus,
 		KeyScopeBIP0084,
 		KeyScopeBIP0086,
 		KeyScopeBIP0044,
 		KeyScopeMwebLegacy,
+		KeyScopeMweb,
 		KeyScopeLiteWallet,
 	}
 
@@ -257,6 +259,10 @@ var (
 			ExternalAddrType: PubKeyHash,
 		},
 		KeyScopeMwebLegacy: {
+			InternalAddrType: Mweb,
+			ExternalAddrType: Mweb,
+		},
+		KeyScopeMweb: {
 			InternalAddrType: Mweb,
 			ExternalAddrType: Mweb,
 		},
@@ -287,6 +293,13 @@ var (
 // MWEB key scope.
 func IsMwebScope(scope KeyScope) bool {
 	return scope == KeyScopeMweb || scope == KeyScopeMwebLegacy
+}
+
+// scopeSpec pairs a KeyScope with its address schema. Used as an ordered
+// representation for deterministic scope creation during wallet init.
+type scopeSpec struct {
+	Scope  KeyScope
+	Schema ScopeAddrSchema
 }
 
 // IsDefaultScope return true if the given scope belongs to the list of default

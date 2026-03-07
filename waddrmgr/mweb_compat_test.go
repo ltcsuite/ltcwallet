@@ -3,6 +3,7 @@ package waddrmgr
 import (
 	"encoding/hex"
 	"testing"
+	"time"
 
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/ltcutil"
@@ -284,5 +285,119 @@ func TestMwebStandardNewAccountRestriction(t *testing.T) {
 	}
 	if !IsError(err, ErrAccountNumTooHigh) {
 		t.Fatalf("expected ErrAccountNumTooHigh, got: %v", err)
+	}
+}
+
+// TestMwebScopeFilteringByBirthday verifies the birthday-based MWEB scope
+// filtering using aezeed day numbers. aezeed days are 24-hour intervals
+// from Bitcoin genesis (2009-01-03 18:15:05 UTC), so day boundaries fall
+// at 18:15:05 UTC, not midnight. Activation is day 6296 (starting at
+// 2026-03-31 18:15:05 UTC).
+//
+// The test uses both "creation-style" times (arbitrary time of day, like
+// time.Now()) and "restore-style" times (BirthdayTime() output, always
+// at 18:15:05 UTC) to verify create-vs-restore consistency.
+func TestMwebScopeFilteringByBirthday(t *testing.T) {
+	t.Parallel()
+
+	genesis := BitcoinGenesisTime
+	dayDur := 24 * time.Hour
+
+	tests := []struct {
+		name         string
+		birthday     time.Time
+		wantStandard bool // KeyScopeMweb should exist
+		wantLegacy   bool // KeyScopeMwebLegacy should exist
+	}{
+		// aezeed day 6295 = last legacy day
+		{
+			name:         "restore: day 6295 (BirthdayTime)",
+			birthday:     genesis.Add(6295 * dayDur), // 2026-03-30 18:15:05
+			wantStandard: false,
+			wantLegacy:   true,
+		},
+		{
+			name:         "create: during day 6295 (2026-03-31 10:00)",
+			birthday:     time.Date(2026, 3, 31, 10, 0, 0, 0, time.UTC),
+			wantStandard: false,
+			wantLegacy:   true,
+		},
+		// aezeed day 6296 = first standard day (activation)
+		{
+			name:         "restore: day 6296 (BirthdayTime)",
+			birthday:     genesis.Add(6296 * dayDur), // 2026-03-31 18:15:05
+			wantStandard: true,
+			wantLegacy:   false,
+		},
+		{
+			name:         "create: during day 6296 (2026-04-01 10:00)",
+			birthday:     time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
+			wantStandard: true,
+			wantLegacy:   false,
+		},
+		// Edge: 1 second before day 6296
+		{
+			name:         "create: 1s before activation",
+			birthday:     genesis.Add(6296*dayDur - time.Second),
+			wantStandard: false,
+			wantLegacy:   true,
+		},
+		// Far past
+		{
+			name:         "far past (2020-01-01)",
+			birthday:     time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			wantStandard: false,
+			wantLegacy:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			teardown, db := emptyDB(t)
+			defer teardown()
+
+			err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
+				ns, err := tx.CreateTopLevelBucket(waddrmgrNamespaceKey)
+				if err != nil {
+					return err
+				}
+				return Create(ns, rootKey, pubPassphrase, privPassphrase,
+					&chaincfg.MainNetParams, fastScrypt, tc.birthday)
+			})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			var mgr *Manager
+			err = walletdb.View(db, func(tx walletdb.ReadTx) error {
+				ns := tx.ReadBucket(waddrmgrNamespaceKey)
+				var err error
+				mgr, err = Open(ns, pubPassphrase, &chaincfg.MainNetParams)
+				return err
+			})
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer mgr.Close()
+
+			_, errStd := mgr.FetchScopedKeyManager(KeyScopeMweb)
+			_, errLeg := mgr.FetchScopedKeyManager(KeyScopeMwebLegacy)
+
+			if tc.wantStandard && errStd != nil {
+				t.Errorf("expected KeyScopeMweb to exist, got: %v", errStd)
+			}
+			if !tc.wantStandard && errStd == nil {
+				t.Error("expected KeyScopeMweb to NOT exist")
+			}
+			if tc.wantLegacy && errLeg != nil {
+				t.Errorf("expected KeyScopeMwebLegacy to exist, got: %v", errLeg)
+			}
+			if !tc.wantLegacy && errLeg == nil {
+				t.Error("expected KeyScopeMwebLegacy to NOT exist")
+			}
+		})
 	}
 }

@@ -2358,10 +2358,17 @@ func TestScopedKeyManagerManagement(t *testing.T) {
 		t.Fatalf("create/open: unexpected error: %v", err)
 	}
 
-	// All the default scopes should have been created and loaded into
-	// memory upon initial opening.
+	// All default scopes should have been created and loaded, except
+	// KeyScopeMweb which is filtered out for pre-activation wallets
+	// (this test uses time.Time{} as birthday).
 	for _, scope := range DefaultKeyScopes {
 		_, err := mgr.FetchScopedKeyManager(scope)
+		if scope == KeyScopeMweb {
+			if err == nil {
+				t.Fatal("KeyScopeMweb should not exist for pre-activation wallet")
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatalf("unable to fetch scope %v: %v", scope, err)
 		}
@@ -2374,6 +2381,9 @@ func TestScopedKeyManagerManagement(t *testing.T) {
 		ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
 
 		for _, scope := range DefaultKeyScopes {
+			if scope == KeyScopeMweb {
+				continue // not present for pre-activation wallet
+			}
 			sMgr, err := mgr.FetchScopedKeyManager(scope)
 			if err != nil {
 				t.Fatalf("unable to fetch scope %v: %v", scope, err)
@@ -2541,11 +2551,18 @@ func TestScopedKeyManagerManagement(t *testing.T) {
 			externalAddr[0].AddrHash(), lastAddr.AddrHash())
 	}
 
-	// After the restart, all the default scopes should be been re-loaded.
+	// After the restart, all scopes should be re-loaded (except
+	// KeyScopeMweb which was not created for this pre-activation wallet).
 	for _, scope := range DefaultKeyScopes {
 		_, err := mgr.FetchScopedKeyManager(scope)
+		if scope == KeyScopeMweb {
+			if err == nil {
+				t.Fatal("KeyScopeMweb should not exist after restart for pre-activation wallet")
+			}
+			continue
+		}
 		if err != nil {
-			t.Fatalf("unable to fetch scope %v: %v", scope, err)
+			t.Fatalf("unable to fetch scope %v after restart: %v", scope, err)
 		}
 	}
 
@@ -3252,10 +3269,13 @@ func TestManagedAddressValidation(t *testing.T) {
 				scope)
 
 			t.Run(testName, func(t *testing.T) {
+				if scope == KeyScopeMweb {
+					t.Skip("KeyScopeMweb not present in pre-activation wallet")
+				}
 				scopedMgr, err := mgr.FetchScopedKeyManager(scope)
 				require.NoError(
 					t, err, "unable to fetch scope %v: %v",
-					KeyScopeBIP0086, err,
+					scope, err,
 				)
 
 				var addr ManagedAddress
