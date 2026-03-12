@@ -417,10 +417,11 @@ func (s *ScopedKeyManager) keyToManaged(derivedKey *hdkeychain.ExtendedKey,
 		return nil, err
 	}
 
-	if !derivedKey.IsPrivate() {
+	if !derivedKey.IsPrivate() && len(acctInfo.acctKeyEncrypted) > 0 {
 		// Add the managed address to the list of addresses that need
 		// their private keys derived when the address manager is next
-		// unlocked.
+		// unlocked. Skip accounts with no private key material (e.g.,
+		// imported MWEB watch-only accounts).
 		info := unlockDeriveInfo{
 			managedAddr: ma,
 			branch:      derivationPath.Branch,
@@ -446,6 +447,13 @@ func (s *ScopedKeyManager) deriveKey(acctInfo *accountInfo, branch,
 	// private child derivation.
 	acctKey := acctInfo.acctKeyPub
 	if private {
+		if acctInfo.acctKeyPriv == nil {
+			return nil, managerError(
+				ErrWatchingOnly,
+				"cannot derive private key for watch-only account",
+				nil,
+			)
+		}
 		acctKey = acctInfo.acctKeyPriv
 	}
 
@@ -594,11 +602,12 @@ func (s *ScopedKeyManager) loadAccountInfo(ns walletdb.ReadBucket,
 	switch row := rowInterface.(type) {
 	case *dbDefaultAccountRow:
 		acctInfo = &accountInfo{
-			acctName:          row.name,
-			acctType:          row.acctType,
-			acctKeyEncrypted:  row.privKeyEncrypted,
-			nextExternalIndex: row.nextExternalIndex,
-			nextInternalIndex: row.nextInternalIndex,
+			acctName:             row.name,
+			acctType:             row.acctType,
+			acctKeyEncrypted:     row.privKeyEncrypted,
+			nextExternalIndex:    row.nextExternalIndex,
+			nextInternalIndex:    row.nextInternalIndex,
+			masterKeyFingerprint: row.masterKeyFingerprint,
 		}
 
 		// Use the crypto public key to decrypt the account public
@@ -612,7 +621,7 @@ func (s *ScopedKeyManager) loadAccountInfo(ns walletdb.ReadBucket,
 			return nil, managerError(ErrCrypto, str, err)
 		}
 
-		if hasPrivateKey {
+		if hasPrivateKey && len(row.privKeyEncrypted) > 0 {
 			// Use the crypto private key to decrypt the account
 			// private extended keys.
 			acctInfo.acctKeyPriv, err = decryptKey(
@@ -623,6 +632,13 @@ func (s *ScopedKeyManager) loadAccountInfo(ns walletdb.ReadBucket,
 					"key for account %d", account)
 				return nil, managerError(ErrCrypto, str, err)
 			}
+		}
+
+		// If no private key was loaded (e.g., imported watch-only
+		// MWEB account with empty privKeyEncrypted), update
+		// hasPrivateKey so downstream derivation uses the public path.
+		if acctInfo.acctKeyPriv == nil {
+			hasPrivateKey = false
 		}
 
 		// Use the crypto public key to decrypt the account
@@ -1434,7 +1450,7 @@ func (s *ScopedKeyManager) extendAddresses(ns walletdb.ReadWriteBucket,
 	// is locked.
 	acctKey := acctInfo.acctKeyPub
 	watchOnly := s.rootManager.watchOnly() ||
-		acctInfo.acctKeyPriv != nil ||
+		len(acctInfo.acctKeyEncrypted) == 0 ||
 		acctInfo.acctType == accountWatchOnly
 	if !s.rootManager.isLocked() && !watchOnly {
 		acctKey = acctInfo.acctKeyPriv
@@ -1978,7 +1994,7 @@ func (s *ScopedKeyManager) newAccount(ns walletdb.ReadWriteBucket,
 	// database
 	err = putDefaultAccountInfo(
 		ns, &s.scope, account, acctPubEnc, acctPrivEnc,
-		acctScanEnc, acctSpendEnc, 0, 0, name,
+		acctScanEnc, acctSpendEnc, 0, 0, 0, name,
 	)
 	if err != nil {
 		return err
@@ -2080,6 +2096,135 @@ func (s *ScopedKeyManager) newAccountWatchingOnly(ns walletdb.ReadWriteBucket,
 	return putLastAccount(ns, &s.scope, account)
 }
 
+// NewMwebAccountWatchingOnly creates a watch-only MWEB account from raw
+// scan secret and spend public key bytes (e.g., from a hardware wallet).
+//
+// Unlike NewAccount(), this method does NOT enforce the account > 0
+// restriction for KeyScopeMweb, because imported accounts bypass BIP32
+// derivation entirely — the key path collision that motivates the
+// restriction cannot occur with raw imported keys.
+//
+// Security: the scan secret reveals all incoming MWEB output amounts
+// and addresses — stronger visibility than a traditional xpub. It is
+// encrypted at rest with cryptoKeyPub (available without wallet unlock).
+func (s *ScopedKeyManager) NewMwebAccountWatchingOnly(
+	ns walletdb.ReadWriteBucket, name string,
+	scanSecret [32]byte, spendPubKey [33]byte,
+	masterKeyFingerprint uint32,
+) (uint32, error) {
+
+	s.rootManager.mtx.RLock()
+	defer s.rootManager.mtx.RUnlock()
+
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+
+	// Only MWEB scopes support scan/spend key storage.
+	if !IsMwebScope(s.scope) {
+		str := "NewMwebAccountWatchingOnly requires an MWEB scope"
+		return 0, managerError(ErrInvalidAccount, str, nil)
+	}
+
+	// Fetch latest account number to generate the next one.
+	account, err := fetchLastAccount(ns, &s.scope)
+	if err != nil {
+		return 0, err
+	}
+	account++
+
+	// Validate the account name.
+	if err := ValidateAccountName(name); err != nil {
+		return 0, err
+	}
+
+	// Check that account with the same name does not exist.
+	_, err = s.lookupAccount(ns, name)
+	if err == nil {
+		str := "account with the same name already exists"
+		return 0, managerError(ErrDuplicateAccount, str, err)
+	}
+
+	// Validate that the spend pubkey is a real compressed secp256k1 point.
+	// Reject malformed keys at import time rather than failing later in
+	// MWEB derivation paths where ECPubKey() errors may be ignored.
+	if _, err := btcec.ParsePubKey(spendPubKey[:]); err != nil {
+		str := "invalid compressed secp256k1 spend pubkey"
+		return 0, managerError(ErrKeyChain, str, err)
+	}
+
+	// Build synthetic extended keys that wrap the raw EC keys.
+	// These are not used for BIP32 derivation — only for storage
+	// format compatibility with the existing accountDefault schema.
+	chainParams := s.rootManager.chainParams
+
+	syntheticPub := hdkeychain.NewExtendedKey(
+		chainParams.HDPublicKeyID[:],
+		spendPubKey[:],
+		make([]byte, 32),            // chaincode (unused)
+		make([]byte, 4),             // parent fingerprint
+		0,                           // depth
+		hdkeychain.HardenedKeyStart, // childNum
+		false,                       // isPrivate
+	)
+
+	syntheticScan := hdkeychain.NewExtendedKey(
+		chainParams.HDPrivateKeyID[:],
+		scanSecret[:],
+		make([]byte, 32),            // chaincode (unused)
+		make([]byte, 4),             // parent fingerprint
+		0,                           // depth
+		hdkeychain.HardenedKeyStart, // childNum
+		true,                        // isPrivate
+	)
+
+	// Encrypt all keys with cryptoKeyPub so they are readable without
+	// wallet unlock (scan key needs to be available for MWEB scanning).
+	pubKeyEnc, err := s.rootManager.cryptoKeyPub.Encrypt(
+		[]byte(syntheticPub.String()),
+	)
+	if err != nil {
+		str := "failed to encrypt public key for imported MWEB account"
+		return 0, managerError(ErrCrypto, str, err)
+	}
+
+	scanKeyEnc, err := s.rootManager.cryptoKeyPub.Encrypt(
+		[]byte(syntheticScan.String()),
+	)
+	if err != nil {
+		str := "failed to encrypt scan key for imported MWEB account"
+		return 0, managerError(ErrCrypto, str, err)
+	}
+
+	spendPubKeyEnc, err := s.rootManager.cryptoKeyPub.Encrypt(
+		[]byte(syntheticPub.String()),
+	)
+	if err != nil {
+		str := "failed to encrypt spend pubkey for imported MWEB account"
+		return 0, managerError(ErrCrypto, str, err)
+	}
+
+	// Store the account using the default (BIP0044-like) row type.
+	// privKeyEncrypted is nil → acctKeyPriv will be nil → IsWatchOnly.
+	err = putDefaultAccountInfo(
+		ns, &s.scope, account, pubKeyEnc, nil,
+		scanKeyEnc, spendPubKeyEnc,
+		masterKeyFingerprint, 0, 0, name,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	// Record the last account number.
+	if err := putLastAccount(ns, &s.scope, account); err != nil {
+		return 0, err
+	}
+
+	// Zero sensitive data.
+	zero.Bytes(scanSecret[:])
+
+	return account, nil
+}
+
 // RenameAccount renames an account stored in the manager based on the given
 // account number with the given name.  If an account with the same name
 // already exists, ErrDuplicateAccount will be returned.
@@ -2127,6 +2272,7 @@ func (s *ScopedKeyManager) RenameAccount(ns walletdb.ReadWriteBucket,
 		err = putDefaultAccountInfo(
 			ns, &s.scope, account, row.pubKeyEncrypted, row.privKeyEncrypted,
 			row.scanKeyEncrypted, row.spendPubKeyEncrypted,
+			row.masterKeyFingerprint,
 			row.nextExternalIndex, row.nextInternalIndex, name,
 		)
 		if err != nil {

@@ -1284,6 +1284,13 @@ func (m *Manager) Unlock(ns walletdb.ReadBucket, passphrase []byte) error {
 	// extended keys.
 	for _, manager := range m.scopedManagers {
 		for account, acctInfo := range manager.acctInfo {
+			// Skip accounts with no private key ciphertext (e.g.,
+			// imported MWEB watch-only accounts that store an empty
+			// privKeyEncrypted).
+			if len(acctInfo.acctKeyEncrypted) == 0 {
+				continue
+			}
+
 			decrypted, err := m.cryptoKeyPriv.Decrypt(acctInfo.acctKeyEncrypted)
 			if err != nil {
 				m.lock()
@@ -1877,7 +1884,7 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 	// Save the information for the default account to the database.
 	err = putDefaultAccountInfo(
 		ns, &scope, DefaultAccountNum, acctPubEnc, acctPrivEnc,
-		acctScanEnc, acctSpendEnc, 0, 0, defaultAccountName,
+		acctScanEnc, acctSpendEnc, 0, 0, 0, defaultAccountName,
 	)
 	if err != nil {
 		return err
@@ -1891,7 +1898,7 @@ func createManagerKeyScope(ns walletdb.ReadWriteBucket,
 	}
 
 	return putDefaultAccountInfo(
-		ns, &scope, ImportedAddrAccount, nil, nil, nil, nil, 0, 0,
+		ns, &scope, ImportedAddrAccount, nil, nil, nil, nil, 0, 0, 0,
 		ImportedAddrAccountName,
 	)
 }

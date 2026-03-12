@@ -111,6 +111,7 @@ type dbDefaultAccountRow struct {
 	nextExternalIndex    uint32
 	nextInternalIndex    uint32
 	name                 string
+	masterKeyFingerprint uint32
 }
 
 // dbWatchOnlyAccountRow houses additional information stored about a watch-only
@@ -797,6 +798,14 @@ func deserializeDefaultAccountRow(accountID []byte, row *dbAccountRow) (*dbDefau
 	nameLen := binary.LittleEndian.Uint32(row.rawData[offset : offset+4])
 	offset += 4
 	retRow.name = string(row.rawData[offset : offset+nameLen])
+	offset += nameLen
+
+	// Read optional trailing masterKeyFingerprint (backward-compatible).
+	if offset+4 <= uint32(len(row.rawData)) {
+		retRow.masterKeyFingerprint = binary.LittleEndian.Uint32(
+			row.rawData[offset : offset+4],
+		)
+	}
 
 	return &retRow, nil
 }
@@ -805,25 +814,31 @@ func deserializeDefaultAccountRow(accountID []byte, row *dbAccountRow) (*dbDefau
 // for a BIP0044-like account.
 func serializeDefaultAccountRow(encryptedPubKey, encryptedPrivKey,
 	encryptedScanKey, encryptedSpendPubKey []byte,
-	nextExternalIndex, nextInternalIndex uint32, name string) []byte {
+	nextExternalIndex, nextInternalIndex uint32, name string,
+	masterKeyFingerprint uint32) []byte {
 
 	// The serialized BIP0044 account raw data format is:
 	//   <encpubkeylen><encpubkey><encprivkeylen><encprivkey>
 	//   <encscankeylen><encscankey><encspendpubkeylen><encspendpubkey>
-	//   <nextextidx><nextintidx><namelen><name>
+	//   <nextextidx><nextintidx><namelen><name>[<masterkeyfingerprint>]
 	//
 	// 4 bytes encrypted pubkey len + encrypted pubkey +
 	// 4 bytes encrypted privkey len + encrypted privkey +
 	// 4 bytes encrypted scankey len + encrypted scankey +
 	// 4 bytes encrypted spendpubkey len + encrypted spendpubkey +
 	// 4 bytes next external index +
-	// 4 bytes next internal index + 4 bytes name len + name
+	// 4 bytes next internal index + 4 bytes name len + name +
+	// (optional) 4 bytes master key fingerprint
 	pubLen := uint32(len(encryptedPubKey))
 	privLen := uint32(len(encryptedPrivKey))
 	scanLen := uint32(len(encryptedScanKey))
 	spendLen := uint32(len(encryptedSpendPubKey))
 	nameLen := uint32(len(name))
-	rawData := make([]byte, 28+pubLen+privLen+scanLen+spendLen+nameLen)
+	size := 28 + pubLen + privLen + scanLen + spendLen + nameLen
+	if masterKeyFingerprint != 0 {
+		size += 4
+	}
+	rawData := make([]byte, size)
 	binary.LittleEndian.PutUint32(rawData[0:4], pubLen)
 	copy(rawData[4:4+pubLen], encryptedPubKey)
 	offset := 4 + pubLen
@@ -846,6 +861,10 @@ func serializeDefaultAccountRow(encryptedPubKey, encryptedPrivKey,
 	binary.LittleEndian.PutUint32(rawData[offset:offset+4], nameLen)
 	offset += 4
 	copy(rawData[offset:offset+nameLen], name)
+	offset += nameLen
+	if masterKeyFingerprint != 0 {
+		binary.LittleEndian.PutUint32(rawData[offset:offset+4], masterKeyFingerprint)
+	}
 	return rawData
 }
 
@@ -1287,12 +1306,14 @@ func putAccountRow(ns walletdb.ReadWriteBucket, scope *KeyScope,
 func putDefaultAccountInfo(ns walletdb.ReadWriteBucket, scope *KeyScope,
 	account uint32, encryptedPubKey, encryptedPrivKey,
 	encryptedScanKey, encryptedSpendPubKey []byte,
+	masterKeyFingerprint uint32,
 	nextExternalIndex, nextInternalIndex uint32, name string) error {
 
 	rawData := serializeDefaultAccountRow(
 		encryptedPubKey, encryptedPrivKey,
 		encryptedScanKey, encryptedSpendPubKey,
 		nextExternalIndex, nextInternalIndex, name,
+		masterKeyFingerprint,
 	)
 
 	// TODO(roasbeef): pass scope bucket directly??
@@ -1802,6 +1823,7 @@ func putChainedAddress(ns walletdb.ReadWriteBucket, scope *KeyScope,
 			arow.pubKeyEncrypted, arow.privKeyEncrypted,
 			arow.scanKeyEncrypted, arow.spendPubKeyEncrypted,
 			nextExternalIndex, nextInternalIndex, arow.name,
+			arow.masterKeyFingerprint,
 		)
 
 	case accountWatchOnly:
@@ -2101,7 +2123,7 @@ func deletePrivateKeys(ns walletdb.ReadWriteBucket) error {
 					arow.pubKeyEncrypted, nil,
 					arow.scanKeyEncrypted, arow.spendPubKeyEncrypted,
 					arow.nextExternalIndex, arow.nextInternalIndex,
-					arow.name,
+					arow.name, arow.masterKeyFingerprint,
 				)
 				err = bucket.Put(k, serializeAccountRow(row))
 				if err != nil {
