@@ -178,9 +178,11 @@ func (w *Wallet) setMwebKeyPool(key skmAccount, kp *mwebKeyPool) {
 // getOrInitMwebKeyPool returns the existing keypool for the given account,
 // or atomically creates and stores a new one if absent. This prevents two
 // goroutines from both creating a fresh pool and one overwriting the
-// other's already-advanced state.
+// other's already-advanced state. An optional poolSize overrides the
+// default 1000-address lookahead for new pools (ignored if pool exists).
 func (w *Wallet) getOrInitMwebKeyPool(
 	key skmAccount, ns walletdb.ReadBucket, ma *mwebAccount,
+	poolSize ...uint32,
 ) (*mwebKeyPool, error) {
 
 	w.mwebKeyPoolsMu.Lock()
@@ -189,7 +191,7 @@ func (w *Wallet) getOrInitMwebKeyPool(
 	if kp, ok := w.mwebKeyPools[key]; ok {
 		return kp, nil
 	}
-	kp, err := newMwebKeyPool(ns, ma)
+	kp, err := newMwebKeyPool(ns, ma, poolSize...)
 	if err != nil {
 		return nil, err
 	}

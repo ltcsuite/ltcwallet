@@ -35,14 +35,12 @@ type (
 
 // preferredMwebScope returns the MWEB key scope to use for address
 // generation and change outputs. Returns KeyScopeMweb (standard) if it
-// exists and the account is 0, otherwise falls back to KeyScopeMwebLegacy.
+// exists, otherwise falls back to KeyScopeMwebLegacy.
 func (w *Wallet) preferredMwebScope(account uint32) waddrmgr.KeyScope {
-	if account == 0 {
-		if _, err := w.Manager.FetchScopedKeyManager(
-			waddrmgr.KeyScopeMweb,
-		); err == nil {
-			return waddrmgr.KeyScopeMweb
-		}
+	if _, err := w.Manager.FetchScopedKeyManager(
+		waddrmgr.KeyScopeMweb,
+	); err == nil {
+		return waddrmgr.KeyScopeMweb
 	}
 	return waddrmgr.KeyScopeMwebLegacy
 }
@@ -585,13 +583,19 @@ type mwebKeyPool struct {
 	mu sync.Mutex
 
 	mwebAccount
-	index    uint32
-	keychain *mweb.Keychain
-	addrs    []*mw.StealthAddress
+	index      uint32
+	poolTarget uint32
+	keychain   *mweb.Keychain
+	addrs      []*mw.StealthAddress
 }
 
 func newMwebKeyPool(addrmgrNs walletdb.ReadBucket,
-	ma *mwebAccount) (*mwebKeyPool, error) {
+	ma *mwebAccount, poolSize ...uint32) (*mwebKeyPool, error) {
+
+	size := uint32(1000)
+	if len(poolSize) > 0 && poolSize[0] > 0 {
+		size = poolSize[0]
+	}
 
 	props, err := ma.skm.AccountProperties(addrmgrNs, ma.account)
 	if err != nil {
@@ -606,6 +610,7 @@ func newMwebKeyPool(addrmgrNs walletdb.ReadBucket,
 	kp := &mwebKeyPool{
 		mwebAccount: *ma,
 		index:       props.ExternalKeyCount,
+		poolTarget:  size,
 		keychain: &mweb.Keychain{
 			Scan:        (*mw.SecretKey)(bytes.Clone(ma.scanSecret[:])),
 			SpendPubKey: (*mw.PublicKey)(spendPubKey.SerializeCompressed()),
@@ -616,10 +621,14 @@ func newMwebKeyPool(addrmgrNs walletdb.ReadBucket,
 	return kp, nil
 }
 
-// topUpLocked fills the address pool up to 1000 entries.
+// topUpLocked fills the address pool up to poolTarget entries.
 // Caller must hold kp.mu (or guarantee single-goroutine access).
 func (kp *mwebKeyPool) topUpLocked() {
-	for len(kp.addrs) < 1000 {
+	target := int(kp.poolTarget)
+	if target == 0 {
+		target = 1000
+	}
+	for len(kp.addrs) < target {
 		index := kp.index + uint32(len(kp.addrs))
 		kp.addrs = append(kp.addrs, kp.keychain.Address(index))
 	}

@@ -8,7 +8,9 @@ import (
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/internal/zero"
 	"github.com/ltcsuite/ltcwallet/netparams"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/walletdb"
@@ -834,4 +836,142 @@ func (w *Wallet) ImportPrivateKey(scope waddrmgr.KeyScope, wif *ltcutil.WIF,
 
 	// Return the payment address string of the imported private key.
 	return addrStr, nil
+}
+
+// ImportMwebScanKey imports an MWEB scan key for watch-only output detection,
+// creating a new account in the standard MWEB key scope ({0, 100}).
+//
+// Security: the scan secret reveals all incoming MWEB transaction amounts
+// and addresses. It is encrypted at rest with the wallet's public passphrase
+// (available without unlock).
+func (w *Wallet) ImportMwebScanKey(
+	name string, scanSecret [32]byte, spendPubKey [33]byte,
+	masterKeyFingerprint uint32, recoveryWindow uint32,
+) (*waddrmgr.AccountProperties, error) {
+
+	if masterKeyFingerprint == 0 {
+		return nil, errors.New("master_key_fingerprint is required " +
+			"(non-zero)")
+	}
+
+	if recoveryWindow == 0 {
+		recoveryWindow = 1000
+	}
+	const maxRecoveryWindow = 100000
+	if recoveryWindow > maxRecoveryWindow {
+		recoveryWindow = maxRecoveryWindow
+	}
+
+	// DB write — create the account in a transaction.
+	var (
+		scopedMgr *waddrmgr.ScopedKeyManager
+		account   uint32
+	)
+	err := walletdb.Update(w.db, func(tx walletdb.ReadWriteTx) error {
+		ns := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+
+		// Fetch or create the standard MWEB scope.
+		var err error
+		scopedMgr, err = w.Manager.FetchScopedKeyManager(
+			waddrmgr.KeyScopeMweb,
+		)
+		if err != nil {
+			// Scope doesn't exist (legacy-only wallet pre-migration).
+			// Create it — on an unlocked wallet this also creates
+			// account 0 with seed-derived keys.
+			scopedMgr, err = w.Manager.NewScopedKeyManager(
+				ns, waddrmgr.KeyScopeMweb,
+				waddrmgr.ScopeAddrMap[waddrmgr.KeyScopeMweb],
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create MWEB scope: %w",
+					err)
+			}
+		}
+
+		account, err = scopedMgr.NewMwebAccountWatchingOnly(
+			ns, name, scanSecret, spendPubKey,
+			masterKeyFingerprint,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Pre-extend addresses up to the recovery window so they are
+		// persisted in the DB. This makes the recovery window durable:
+		// after restart, ExternalKeyCount = recoveryWindow, and the
+		// default 1000 lookahead extends from there. Without this,
+		// the in-memory pool's prederived addresses would be lost on
+		// restart, dropping the effective window to the default 1000.
+		if recoveryWindow > 1 {
+			err = scopedMgr.ExtendExternalAddresses(
+				ns, account, recoveryWindow-1,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to extend addresses "+
+					"to recovery window: %w", err)
+			}
+		}
+
+		// Invalidate cache so phase 2 re-reads from committed DB.
+		scopedMgr.InvalidateAccountCache(account)
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// In-memory init — build keypool from committed DB state.
+	// This happens outside the DB transaction to avoid polluting
+	// in-memory state if the transaction were to roll back.
+	//
+	// The addresses up to recoveryWindow were already persisted to the
+	// DB via ExtendExternalAddresses, so ExternalKeyCount
+	// is durable. The in-memory pool extends from there with its
+	// default lookahead.
+	//
+	// getOrInitMwebKeyPool is used atomically: if a concurrent chain
+	// notification already initialized the pool, we use that pool
+	// rather than overwriting it.
+	var accountProps *waddrmgr.AccountProperties
+	key := skmAccount{skm: scopedMgr, account: account}
+	err = walletdb.View(w.db, func(tx walletdb.ReadTx) error {
+		ns := tx.ReadBucket(waddrmgrNamespaceKey)
+
+		var err error
+		accountProps, err = scopedMgr.AccountProperties(ns, account)
+		if err != nil {
+			return err
+		}
+
+		// Build the scan secret for the keypool.
+		scanPriv, err := accountProps.AccountScanKey.ECPrivKey()
+		if err != nil {
+			return fmt.Errorf("failed to extract scan key: %w", err)
+		}
+		scanKeyBytes := scanPriv.Key.Bytes()
+		scanKey := (*mw.SecretKey)(&scanKeyBytes)
+		defer zero.Bytes(scanKey[:])
+
+		ma := &mwebAccount{
+			skmAccount: key,
+			scanSecret: scanKey,
+		}
+
+		_, err = w.getOrInitMwebKeyPool(key, ns, ma)
+		if err != nil {
+			return fmt.Errorf("failed to init keypool: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	log.Infof("Imported MWEB scan key as account %q (account %d) "+
+		"in scope %v", name, account, waddrmgr.KeyScopeMweb)
+
+	return accountProps, nil
 }
