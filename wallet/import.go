@@ -975,3 +975,23 @@ func (w *Wallet) ImportMwebScanKey(
 
 	return accountProps, nil
 }
+
+// ImportMwebScanKeyWithRescan imports an MWEB scan key and then launches
+// a background goroutine to replay all known MWEB UTXOs, discovering
+// any that belong to the newly-imported scan key. The method returns
+// immediately after the import succeeds; the UTXO scan runs asynchronously.
+func (w *Wallet) ImportMwebScanKeyWithRescan(
+	name string, scanSecret [32]byte, spendPubKey [33]byte,
+	masterKeyFingerprint uint32, recoveryWindow uint32,
+) (*waddrmgr.AccountProperties, error) {
+
+	props, err := w.ImportMwebScanKey(name, scanSecret, spendPubKey,
+		masterKeyFingerprint, recoveryWindow)
+	if err != nil {
+		return nil, err
+	}
+
+	go w.recoverMwebUtxos()
+
+	return props, nil
+}

@@ -132,6 +132,22 @@ type (
 	}
 )
 
+// MwebReplayer is an optional interface for chain clients that support
+// replaying all known MWEB UTXOs through the notification pipeline.
+// This is used for MWEB UTXO recovery after importing a scan key.
+type MwebReplayer interface {
+	ReplayMwebUtxos() error
+}
+
+// MwebUtxoChecker is an optional interface for chain clients that can
+// verify whether a MWEB UTXO still exists (hasn't been spent).
+type MwebUtxoChecker interface {
+	// MwebUtxoExists checks if a MWEB UTXO with the given output ID
+	// exists in the backend's coin database. Returns (false, nil) if
+	// not found. DB errors are propagated, not hidden.
+	MwebUtxoExists(*chainhash.Hash) (bool, error)
+}
+
 // batchClient defines an interface that is used to interact with the RPC
 // client.
 //

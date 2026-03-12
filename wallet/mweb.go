@@ -402,7 +402,7 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 		return err
 	}
 
-	nc, ok := chainClient.(*chain.NeutrinoClient)
+	checker, ok := chainClient.(chain.MwebUtxoChecker)
 	if !ok {
 		return nil
 	}
@@ -417,7 +417,11 @@ func (w *Wallet) checkMwebLeafset(dbtx walletdb.ReadWriteTx,
 		if output.MwebOutput == nil || output.Height < 0 {
 			continue
 		}
-		if !nc.CS.MwebUtxoExists(output.MwebOutput.Hash()) {
+		exists, err := checker.MwebUtxoExists(output.MwebOutput.Hash())
+		if err != nil {
+			return err
+		}
+		if !exists {
 			rec.MsgTx.AddTxIn(&wire.TxIn{PreviousOutPoint: output.OutPoint})
 		}
 	}
@@ -667,4 +671,37 @@ func (kp *mwebKeyPool) contains(addrmgrNs walletdb.ReadWriteBucket,
 	kp.topUpLocked()
 
 	return true, nil
+}
+
+// recoverMwebUtxos waits for mwebsync to complete, then replays all
+// known MWEB UTXOs through the standard notification pipeline. This
+// causes checkMwebUtxos to scan each UTXO against all MWEB accounts'
+// scan keys, discovering any that belong to a newly-imported account.
+func (w *Wallet) recoverMwebUtxos() {
+	chainClient := w.ChainClient()
+	if chainClient == nil {
+		log.Warnf("MWEB UTXO recovery: no chain client available")
+		return
+	}
+
+	// Wait for mwebsync to be synced (headers + MWEB data both current).
+	if syncer, ok := chainClient.(interface{ IsMwebSynced() bool }); ok {
+		for !syncer.IsMwebSynced() {
+			select {
+			case <-w.quitChan():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}
+
+	replayer, ok := chainClient.(chain.MwebReplayer)
+	if !ok {
+		log.Warnf("Chain backend does not support MWEB UTXO replay")
+		return
+	}
+
+	if err := replayer.ReplayMwebUtxos(); err != nil {
+		log.Errorf("MWEB UTXO recovery failed: %v", err)
+	}
 }

@@ -773,6 +773,18 @@ out:
 	s.wg.Done()
 }
 
+// ReplayMwebUtxos replays all known MWEB UTXOs through the notification
+// pipeline by diffing an empty leafset against the current coin database.
+func (s *NeutrinoClient) ReplayMwebUtxos() error {
+	return s.CS.NotifyAddedMwebUtxos(&mweb.Leafset{})
+}
+
+// MwebUtxoExists checks if a MWEB UTXO with the given output ID exists
+// in the neutrino chain service's coin database.
+func (s *NeutrinoClient) MwebUtxoExists(hash *chainhash.Hash) (bool, error) {
+	return s.CS.MwebUtxoExists(hash), nil
+}
+
 func (s *NeutrinoClient) onRecvTx(tx *ltcutil.Tx) {
 	rec, err := wtxmgr.NewTxRecordFromMsgTx(tx.MsgTx(), time.Now())
 	if err != nil {
