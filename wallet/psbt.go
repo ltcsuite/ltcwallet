@@ -378,6 +378,11 @@ func addInputInfoMweb(w *Wallet, in *psbt.PInput, prevTx *wire.MsgTx, utxo *wire
 	in.MwebCommit = &mwebOutput.Commitment
 	in.MwebOutputPubkey = &mwebOutput.ReceiverPubKey
 
+	if in.MwebFeatures == nil {
+		features := wire.MwebInputStealthKeyFeatureBit
+		in.MwebFeatures = &features
+	}
+
 	// Populate MwebAddressIndex, MwebMasterScanKey, and MwebMasterSpendKey
 	// by looking up the address in the wallet's address manager.
 	if err := populateMwebKeyOrigins(w, in, &mwebOutput.ReceiverPubKey, &mwebOutput.Message.KeyExchangePubKey, nil); err != nil {
@@ -397,6 +402,11 @@ func addInputInfoMwebFromOutputId(w *Wallet, in *psbt.PInput) error {
 	// Accept either key_exchange_pk (0x99) or shared_secret (0x98)
 	if in.MwebKeyExchangePubkey == nil && in.MwebSharedSecret == nil {
 		return fmt.Errorf("MWEB input missing key exchange pubkey and shared secret")
+	}
+
+	if in.MwebFeatures == nil {
+		features := wire.MwebInputStealthKeyFeatureBit
+		in.MwebFeatures = &features
 	}
 
 	if err := populateMwebKeyOrigins(w, in, in.MwebOutputPubkey, in.MwebKeyExchangePubkey, in.MwebSharedSecret); err != nil {
