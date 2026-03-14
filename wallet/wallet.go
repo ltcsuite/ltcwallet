@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -2778,6 +2779,8 @@ func (w *Wallet) GetTransactions(startBlock, endBlock *BlockIdentifier,
 		}
 	}
 
+	filter := accountName != ""
+
 	var res GetTransactionsResult
 	err := walletdb.View(w.db, func(dbtx walletdb.ReadTx) error {
 		txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
@@ -2791,7 +2794,27 @@ func (w *Wallet) GetTransactions(startBlock, endBlock *BlockIdentifier,
 
 			txs := make([]TransactionSummary, 0, len(details))
 			for i := range details {
-				txs = append(txs, makeTxSummary(dbtx, w, &details[i]))
+				if filter {
+					summary, ok := makeAccountScopedTxSummary(
+						dbtx, w, &details[i], accountName,
+					)
+					if !ok {
+						continue
+					}
+					txs = append(txs, summary)
+				} else {
+					txs = append(txs, makeTxSummary(dbtx, w, &details[i]))
+				}
+			}
+
+			// When filtering, skip blocks with no matching txs.
+			if len(txs) == 0 {
+				select {
+				case <-cancel:
+					return true, nil
+				default:
+					return false, nil
+				}
 			}
 
 			if details[0].Block.Height != -1 {
@@ -2817,6 +2840,172 @@ func (w *Wallet) GetTransactions(startBlock, endBlock *BlockIdentifier,
 		return w.TxStore.RangeTransactions(txmgrNs, start, end, rangeFn)
 	})
 	return &res, err
+}
+
+// makeAccountScopedTxSummary builds a TransactionSummary with only the
+// credits and debits belonging to accountName. Returns false if the
+// transaction has no matching credits or debits (caller should skip it).
+//
+// When account resolution fails for a credit or debit, it is attributed
+// to "default" — matching the fallback in lookupInputAccount and
+// lookupOutputChain (which return account 0). This ensures wallet-owned
+// outputs whose addresses can't be resolved via AddrAccount are still
+// included when filtering by the default account.
+//
+// NOTE: the returned MyInputs/MyOutputs are account-scoped, not
+// wallet-scoped. This means lnd's is_our_address and is_our_output
+// flags will reflect account ownership, not wallet ownership. This is
+// intentional for account-switching UX: when viewing account "hw-mweb",
+// outputs to "default" should not appear as "ours".
+func makeAccountScopedTxSummary(dbtx walletdb.ReadTx, w *Wallet,
+	details *wtxmgr.TxDetails, accountName string) (TransactionSummary, bool) {
+
+	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+	txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+
+	const defaultAcctName = "default"
+
+	// Filter credits (outputs we received) to only those matching
+	// the target account. Credits are ordered by output index; use
+	// a separate cursor rather than len(outputs) to track position.
+	// On resolution failure, fall back to "default" (account 0).
+	var matchedOutputs []TransactionSummaryOutput
+	credIdx := 0
+	for i := range details.MsgTx.TxOut {
+		if credIdx >= len(details.Credits) {
+			break
+		}
+		if details.Credits[credIdx].Index != uint32(i) {
+			continue
+		}
+		cred := details.Credits[credIdx]
+		credIdx++
+
+		// Resolve credit's account name. Fall back to "default"
+		// on any failure, matching lookupOutputChain's fallback
+		// to account 0.
+		credAcctName := defaultAcctName
+		var acctNum uint32
+		var internal bool
+
+		output := details.MsgTx.TxOut[cred.Index]
+		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+			output.PkScript, w.chainParams,
+		)
+		if err == nil && len(addrs) > 0 {
+			smgr, num, err := w.Manager.AddrAccount(
+				addrmgrNs, addrs[0],
+			)
+			if err == nil {
+				acctNum = num
+				name, err := smgr.AccountName(addrmgrNs, num)
+				if err == nil {
+					credAcctName = name
+				}
+				ma, err := w.Manager.Address(addrmgrNs, addrs[0])
+				if err == nil {
+					internal = ma.Internal()
+				}
+			}
+		}
+
+		if credAcctName != accountName {
+			continue
+		}
+
+		matchedOutputs = append(matchedOutputs, TransactionSummaryOutput{
+			Index:    uint32(i),
+			Account:  acctNum,
+			Internal: internal,
+		})
+	}
+
+	// Filter debits (inputs we spent) to only those matching
+	// the target account. On resolution failure, fall back to
+	// "default" (matching lookupInputAccount's fallback to account 0).
+	var matchedInputs []TransactionSummaryInput
+	allDebitsMatch := true
+	for _, d := range details.Debits {
+		debAcctName := defaultAcctName
+		var acctNum uint32
+
+		prevOP := &details.MsgTx.TxIn[d.Index].PreviousOutPoint
+		prev, err := w.TxStore.TxDetails(txmgrNs, &prevOP.Hash)
+		if err == nil && prev != nil {
+			prevOut := prev.MsgTx.TxOut[prevOP.Index]
+			_, addrs, _, err := txscript.ExtractPkScriptAddrs(
+				prevOut.PkScript, w.chainParams,
+			)
+			if err == nil && len(addrs) > 0 {
+				smgr, num, err := w.Manager.AddrAccount(
+					addrmgrNs, addrs[0],
+				)
+				if err == nil {
+					acctNum = num
+					name, err := smgr.AccountName(
+						addrmgrNs, num,
+					)
+					if err == nil {
+						debAcctName = name
+					}
+				}
+			}
+		}
+
+		if debAcctName != accountName {
+			allDebitsMatch = false
+			continue
+		}
+
+		matchedInputs = append(matchedInputs, TransactionSummaryInput{
+			Index:           d.Index,
+			PreviousAccount: acctNum,
+			PreviousAmount:  d.Amount,
+		})
+	}
+
+	if len(matchedInputs) == 0 && len(matchedOutputs) == 0 {
+		return TransactionSummary{}, false
+	}
+
+	// Fee: only attribute when ALL debits belong to this account and
+	// all tx inputs are wallet debits (same condition as makeTxSummary).
+	var fee ltcutil.Amount
+	nDebits := len(details.Debits)
+	if allDebitsMatch && nDebits > 0 && nDebits == len(details.MsgTx.TxIn) {
+		for _, deb := range details.Debits {
+			fee += deb.Amount
+		}
+		for _, txOut := range details.MsgTx.TxOut {
+			fee -= ltcutil.Amount(txOut.Value)
+		}
+		if details.MsgTx.Mweb != nil {
+			for _, kernel := range details.MsgTx.Mweb.TxBody.Kernels {
+				fee += ltcutil.Amount(kernel.Pegin)
+			}
+		}
+	}
+
+	serializedTx := details.SerializedTx
+	if serializedTx == nil {
+		var buf bytes.Buffer
+		err := details.MsgTx.Serialize(&buf)
+		if err != nil {
+			log.Errorf("Transaction serialization: %v", err)
+		}
+		serializedTx = buf.Bytes()
+	}
+
+	return TransactionSummary{
+		Hash:        &details.Hash,
+		Transaction: serializedTx,
+		Broadcast:   details.BroadcastTx,
+		MyInputs:    matchedInputs,
+		MyOutputs:   matchedOutputs,
+		Fee:         fee,
+		Timestamp:   details.Received.Unix(),
+		Label:       details.Label,
+	}, true
 }
 
 // GetTransactionResult returns a summary of the transaction along with
@@ -3070,6 +3259,90 @@ func (s creditSlice) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
 }
 
+type outputAccountLookup struct {
+	number uint32
+	name   string
+	scope  waddrmgr.KeyScope
+}
+
+func formatOutputAccountLookups(lookups []outputAccountLookup) string {
+	if len(lookups) == 0 {
+		return "[]"
+	}
+
+	parts := make([]string, 0, len(lookups))
+	for _, lookup := range lookups {
+		parts = append(parts, fmt.Sprintf(
+			"%s/%d:%s", lookup.scope, lookup.number, lookup.name,
+		))
+	}
+
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// lookupAddressAccounts returns every account across every active scope that
+// recognizes the target address. The result is sorted deterministically by
+// scope, then account number, to avoid map iteration affecting lookups.
+func (w *Wallet) lookupAddressAccounts(addrmgrNs walletdb.ReadBucket,
+	addr ltcutil.Address) ([]outputAccountLookup, error) {
+
+	scopedManagers := w.Manager.ActiveScopedKeyManagers()
+	sort.Slice(scopedManagers, func(i, j int) bool {
+		scopeI := scopedManagers[i].Scope()
+		scopeJ := scopedManagers[j].Scope()
+		if scopeI.Purpose == scopeJ.Purpose {
+			return scopeI.Coin < scopeJ.Coin
+		}
+
+		return scopeI.Purpose < scopeJ.Purpose
+	})
+
+	type lookupKey struct {
+		scope  waddrmgr.KeyScope
+		number uint32
+	}
+
+	lookups := make([]outputAccountLookup, 0, 1)
+	seen := make(map[lookupKey]struct{})
+	for _, scopedMgr := range scopedManagers {
+		_, err := scopedMgr.Address(addrmgrNs, addr)
+		switch {
+		case waddrmgr.IsError(err, waddrmgr.ErrAddressNotFound):
+			continue
+
+		case err != nil:
+			return nil, err
+		}
+
+		accountNum, err := scopedMgr.AddrAccount(addrmgrNs, addr)
+		if err != nil {
+			return nil, err
+		}
+
+		key := lookupKey{
+			scope:  scopedMgr.Scope(),
+			number: accountNum,
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		accountName, err := scopedMgr.AccountName(addrmgrNs, accountNum)
+		if err != nil {
+			return nil, err
+		}
+
+		lookups = append(lookups, outputAccountLookup{
+			number: accountNum,
+			name:   accountName,
+			scope:  scopedMgr.Scope(),
+		})
+	}
+
+	return lookups, nil
+}
+
 // ListUnspent returns a slice of objects representing the unspent wallet
 // transactions fitting the given criteria. The confirmations will be more than
 // minconf, less than maxconf and if addresses is populated only the addresses
@@ -3079,6 +3352,7 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 	accountName string) ([]*btcjson.ListUnspentResult, error) {
 
 	var results []*btcjson.ListUnspentResult
+	debugAccountFilter := os.Getenv("LTCWALLET_DEBUG_LISTUNSPENT_ACCOUNT")
 	err := walletdb.View(w.db, func(tx walletdb.ReadTx) error {
 		addrmgrNs := tx.ReadBucket(waddrmgrNamespaceKey)
 		txmgrNs := tx.ReadBucket(wtxmgrNamespaceKey)
@@ -3122,22 +3396,50 @@ func (w *Wallet) ListUnspent(minconf, maxconf int32,
 			// This will be unnecessary once transactions and outputs are
 			// grouped under the associated account in the db.
 			outputAcctName := defaultAccountName
+			matchesFilter := !filter || accountName == defaultAccountName
+			accountLookups := []outputAccountLookup(nil)
+			addrStr := ""
 			sc, addrs, _, err := txscript.ExtractPkScriptAddrs(
 				output.PkScript, w.chainParams)
 			if err != nil {
+				if debugAccountFilter != "" && filter {
+					log.Warnf("ListUnspent filter=%q outpoint=%s "+
+						"extract_err=%v include=false", accountName,
+						output.OutPoint.String(), err)
+				}
 				continue
 			}
 			if len(addrs) > 0 {
-				smgr, acct, err := w.Manager.AddrAccount(addrmgrNs, addrs[0])
-				if err == nil {
-					s, err := smgr.AccountName(addrmgrNs, acct)
-					if err == nil {
-						outputAcctName = s
+				addrStr = addrs[0].EncodeAddress()
+				accountLookups, err = w.lookupAddressAccounts(
+					addrmgrNs, addrs[0],
+				)
+				if err != nil {
+					return err
+				}
+				if len(accountLookups) > 0 {
+					outputAcctName = accountLookups[0].name
+					matchesFilter = !filter
+					for _, lookup := range accountLookups {
+						if lookup.name == accountName {
+							outputAcctName = lookup.name
+							matchesFilter = true
+							break
+						}
 					}
 				}
 			}
 
-			if filter && outputAcctName != accountName {
+			if debugAccountFilter != "" && filter {
+				log.Warnf("ListUnspent filter=%q outpoint=%s "+
+					"script_class=%v addr=%q lookups=%s "+
+					"selected_account=%q include=%v",
+					accountName, output.OutPoint.String(), sc, addrStr,
+					formatOutputAccountLookups(accountLookups),
+					outputAcctName, matchesFilter)
+			}
+
+			if filter && !matchesFilter {
 				continue
 			}
 
