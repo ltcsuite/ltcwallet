@@ -881,6 +881,22 @@ func (w *Wallet) FinalizePsbt(keyScope *waddrmgr.KeyScope, account uint32, packe
 	return nil
 }
 
+// PrepareMwebPresign signs every unsigned MWEB output in the packet and
+// attaches the generated sender key as a proprietary presign field on that
+// output. For every unsigned kernel with the stealth-excess feature bit, a
+// fresh 32-byte stealth scalar is also attached as a proprietary presign
+// field. Inputs and kernels remain unsigned so an external signer can
+// complete them.
+func (w *Wallet) PrepareMwebPresign(packet *psbt.Packet) error {
+	if _, err := psbt.SignMwebOutputsOnly(packet); err != nil {
+		return fmt.Errorf("error signing MWEB outputs: %v", err)
+	}
+	if err := psbt.PrepareMwebKernels(packet); err != nil {
+		return fmt.Errorf("error preparing MWEB kernels: %v", err)
+	}
+	return nil
+}
+
 // PsbtPrevOutputFetcher returns a txscript.PrevOutFetcher built from the UTXO
 // information in a PSBT packet.
 func PsbtPrevOutputFetcher(packet *psbt.Packet) *txscript.MultiPrevOutFetcher {

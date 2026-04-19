@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -538,5 +539,75 @@ func TestFinalizePsbt(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("error validating tx: %v", err)
+	}
+}
+
+// TestPrepareMwebPresign asserts the phased-signing forwarder signs
+// unfinalized MWEB outputs and attaches presign stealth scalars to
+// unfinalized stealth-excess kernels, leaving everything else alone.
+func TestPrepareMwebPresign(t *testing.T) {
+	t.Parallel()
+
+	scanKey, err := mw.NewSecretKey()
+	if err != nil {
+		t.Fatalf("scan key: %v", err)
+	}
+	spendKey, err := mw.NewSecretKey()
+	if err != nil {
+		t.Fatalf("spend key: %v", err)
+	}
+	stealthAddr := &mw.StealthAddress{Scan: scanKey.PubKey(), Spend: spendKey.PubKey()}
+
+	outputFeatures := wire.MwebOutputMessageStandardFieldsFeatureBit
+	po := psbt.POutput{
+		Amount:         ltcutil.Amount(100000),
+		StealthAddress: stealthAddr,
+		MwebFeatures:   &outputFeatures,
+	}
+
+	kernelFeatures := wire.MwebKernelStealthExcessFeatureBit | wire.MwebKernelFeeFeatureBit
+	fee := ltcutil.Amount(1000)
+	pk := psbt.PKernel{
+		Features: &kernelFeatures,
+		Fee:      &fee,
+	}
+
+	packet := &psbt.Packet{
+		PsbtVersion: 2,
+		Outputs:     []psbt.POutput{po},
+		Kernels:     []psbt.PKernel{pk},
+	}
+
+	w := &Wallet{}
+	if err := w.PrepareMwebPresign(packet); err != nil {
+		t.Fatalf("PrepareMwebPresign: %v", err)
+	}
+
+	signed := &packet.Outputs[0]
+	if signed.MwebSignature == nil || signed.OutputCommit == nil {
+		t.Fatalf("output not signed")
+	}
+	senderKey, err := signed.GetMwebPresignSenderKey()
+	if err != nil {
+		t.Fatalf("GetMwebPresignSenderKey: %v", err)
+	}
+	if len(senderKey) != 32 {
+		t.Fatalf("output presign sender key: got %d bytes, want 32", len(senderKey))
+	}
+
+	stealthKey, err := packet.Kernels[0].GetMwebPresignStealthKey()
+	if err != nil {
+		t.Fatalf("GetMwebPresignStealthKey: %v", err)
+	}
+	if len(stealthKey) != 32 {
+		t.Fatalf("kernel presign stealth key: got %d bytes, want 32", len(stealthKey))
+	}
+
+	if packet.MwebTxOffset == nil || packet.MwebStealthOffset == nil {
+		t.Fatalf("offsets not populated")
+	}
+
+	if packet.Kernels[0].Signature != nil || packet.Kernels[0].ExcessCommitment != nil {
+		t.Fatalf("kernel was signed by PrepareMwebPresign")
 	}
 }
