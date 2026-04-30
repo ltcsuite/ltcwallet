@@ -55,7 +55,7 @@ func TestPreferredMwebScope(t *testing.T) {
 
 	t.Run("new wallet has standard scope", func(t *testing.T) {
 		t.Parallel()
-		w, cleanup := testMwebWallet(t, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), false)
+		w, cleanup := testMwebWallet(t, time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC), false)
 		defer cleanup()
 
 		scope := w.preferredMwebScope(0)
@@ -94,7 +94,7 @@ func TestResolveMwebScopeAndAccount(t *testing.T) {
 
 	t.Run("new wallet resolves default", func(t *testing.T) {
 		t.Parallel()
-		w, cleanup := testMwebWallet(t, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), false)
+		w, cleanup := testMwebWallet(t, time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC), false)
 		defer cleanup()
 
 		scope, account, err := w.ResolveMwebScopeAndAccount("default")
@@ -128,7 +128,7 @@ func TestResolveMwebScopeAndAccount(t *testing.T) {
 
 	t.Run("nonexistent name returns error on new wallet", func(t *testing.T) {
 		t.Parallel()
-		w, cleanup := testMwebWallet(t, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), false)
+		w, cleanup := testMwebWallet(t, time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC), false)
 		defer cleanup()
 
 		_, _, err := w.ResolveMwebScopeAndAccount("nonexistent")
@@ -166,7 +166,7 @@ func TestCreateOutputInfoMwebPaths(t *testing.T) {
 
 		// Post-activation wallet → has KeyScopeMweb (standard)
 		w, cleanup := testMwebWallet(t,
-			time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), true)
+			time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC), true)
 		defer cleanup()
 
 		out := generateMwebOutputInfo(t, w, waddrmgr.KeyScopeMweb)
@@ -372,7 +372,7 @@ func TestMwebMigrationCreatesKeyPool(t *testing.T) {
 func TestMwebNewWalletHasNoLegacyScope(t *testing.T) {
 	t.Parallel()
 
-	w, cleanup := testMwebWallet(t, time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), true)
+	w, cleanup := testMwebWallet(t, time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC), true)
 	defer cleanup()
 
 	if _, err := w.Manager.FetchScopedKeyManager(waddrmgr.KeyScopeMweb); err != nil {

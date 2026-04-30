@@ -13,9 +13,9 @@ import (
 
 // Test vectors using a 16-byte aezeed entropy (the minimum seed size for
 // hdkeychain.NewMaster). Two aezeed mnemonics share this entropy but have
-// different birthdays — day 6295 (pre-activation, legacy scope) and day 6296
-// (post-activation, standard scope). This verifies that the same entropy
-// produces the correct, different MWEB keys depending on the derivation path.
+// different birthdays — day 6295 (legacy scope example) and day 6296
+// (standard scope example). These demonstrate the two derivation paths rather
+// than the current activation boundary.
 //
 // Entropy: 81b637d86359e6960de795e41e0b4cfd
 //
@@ -108,7 +108,7 @@ var (
 
 // TestAezeedStandardDerivation verifies the standard MWEB key derivation
 // path (m/0'/100') using 16-byte aezeed entropy. This is the path used by
-// wallets created on or after day 6296 (2026-03-31 18:15:05 UTC).
+// wallets created on or after day 6358 (2026-06-01 18:15:05 UTC).
 func TestAezeedStandardDerivation(t *testing.T) {
 	t.Parallel()
 
@@ -147,7 +147,7 @@ func TestAezeedStandardDerivation(t *testing.T) {
 
 // TestAezeedLegacyDerivation verifies the legacy MWEB key derivation
 // path (m/1000'/2'/0') using the same 16-byte aezeed entropy. This is the
-// path used by wallets created before day 6296.
+// path used by wallets created before day 6358.
 func TestAezeedLegacyDerivation(t *testing.T) {
 	t.Parallel()
 

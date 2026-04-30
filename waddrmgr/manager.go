@@ -58,8 +58,8 @@ const (
 	// wallets start using KeyScopeMweb (the standard MWEB derivation
 	// path) instead of KeyScopeMwebLegacy. aezeed days are 24-hour
 	// intervals from Bitcoin genesis (2009-01-03 18:15:05 UTC), so
-	// day 6296 starts at 2026-03-31 18:15:05 UTC.
-	MwebStandardActivationDays = 6296
+	// day 6358 starts at 2026-06-01 18:15:05 UTC.
+	MwebStandardActivationDays = 6358
 
 	// The hierarchy described by BIP0043 is:
 	//  m/<purpose>'/*
