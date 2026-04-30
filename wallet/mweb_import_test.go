@@ -36,7 +36,7 @@ func testMwebImportWallet(t *testing.T) (*Wallet, func()) {
 	t.Helper()
 	// Post-activation wallet → has KeyScopeMweb, not legacy.
 	w, cleanup := testMwebWallet(t,
-		time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC), true)
+		time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC), true)
 	return w, cleanup
 }
 
@@ -529,7 +529,7 @@ func TestImportMwebScanKeyOnLockedWallet(t *testing.T) {
 		WithWalletSyncRetryInterval(10*time.Millisecond),
 	)
 	w, err := loader.CreateNewWallet(pubPass, privPass, seed,
-		time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC))
+		time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("CreateNewWallet: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestImportMwebScanKeyOnWatchOnlyWallet(t *testing.T) {
 		WithWalletSyncRetryInterval(10*time.Millisecond),
 	)
 	w, err := loader.CreateNewWatchingOnlyWallet(pubPass,
-		time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC))
+		time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("CreateNewWatchingOnlyWallet: %v", err)
 	}
