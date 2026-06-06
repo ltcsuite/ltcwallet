@@ -50,6 +50,23 @@ type Interface interface {
 	BackEnd() string
 }
 
+// AddressTx identifies a transaction in the wallet's committed history that is
+// relevant to a particular address, along with the height of the block that
+// mined it. Height is -1 for an unconfirmed transaction.
+type AddressTx struct {
+	TxID   chainhash.Hash
+	Height int32
+}
+
+// HistorySeeder is an optional interface a chain backend may implement to
+// receive the wallet's committed per-address transaction history, keyed by
+// encoded address, at the start of a sync. A backend can use it to recognize
+// addresses unchanged since the previous session and skip re-fetching their
+// history. Backends that do not implement it are unaffected.
+type HistorySeeder interface {
+	SeedAddressHistory(history map[string][]AddressTx)
+}
+
 // Notification types.  These are defined here and processed from from reading
 // a notificationChan to avoid handling these notifications directly in
 // rpcclient callbacks, which isn't very Go-like and doesn't allow

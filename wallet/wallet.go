@@ -642,7 +642,114 @@ func (w *Wallet) syncWithChain(birthdayStamp *waddrmgr.BlockStamp) (
 		}
 	}
 
+	// Seed chain backends that can use the wallet's committed per-address
+	// history, letting them recognize unchanged addresses and avoid
+	// re-fetching their full history from the server on every restart.
+	if seeder, ok := chainClient.(chain.HistorySeeder); ok {
+		history, err := w.committedAddressHistory(addrs)
+		if err != nil {
+			log.Warnf("Unable to gather committed address history "+
+				"for seeding: %v", err)
+		} else {
+			seeder.SeedAddressHistory(history)
+		}
+	}
+
 	return birthdayStamp, w.rescanWithTarget(addrs, unspent, nil)
+}
+
+// committedAddressHistory gathers, for each of the given P2WPKH addresses, the
+// transactions in the wallet's committed history that pay to or spend from the
+// address, along with the height of the block that mined each (-1 for an
+// unconfirmed transaction). It lets a chain backend implementing
+// chain.HistorySeeder rebuild each address's transaction status from local
+// state instead of re-fetching it from the server.
+func (w *Wallet) committedAddressHistory(
+	addrs []ltcutil.Address) (map[string][]chain.AddressTx, error) {
+
+	// Map each watched P2WPKH output script to its encoded address so a
+	// transaction's credits and debits can be attributed back to it.
+	scriptToAddr := make(map[string]string)
+	for _, addr := range addrs {
+		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); !ok {
+			continue
+		}
+		script, err := txscript.PayToAddrScript(addr)
+		if err != nil {
+			continue
+		}
+		scriptToAddr[string(script)] = addr.EncodeAddress()
+	}
+	if len(scriptToAddr) == 0 {
+		return nil, nil
+	}
+
+	history := make(map[string][]chain.AddressTx)
+	seen := make(map[string]map[chainhash.Hash]struct{})
+
+	// record appends a transaction to an address's history once, preserving
+	// the block order in which RangeTransactions yields it.
+	record := func(addr string, txid chainhash.Hash, height int32) {
+		txids, ok := seen[addr]
+		if !ok {
+			txids = make(map[chainhash.Hash]struct{})
+			seen[addr] = txids
+		}
+		if _, ok := txids[txid]; ok {
+			return
+		}
+		txids[txid] = struct{}{}
+		history[addr] = append(history[addr], chain.AddressTx{
+			TxID:   txid,
+			Height: height,
+		})
+	}
+
+	err := walletdb.View(w.db, func(dbtx walletdb.ReadTx) error {
+		txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+
+		return w.TxStore.RangeTransactions(txmgrNs, 0, -1,
+			func(details []wtxmgr.TxDetails) (bool, error) {
+				for i := range details {
+					detail := &details[i]
+					height := detail.Block.Height
+
+					// Outputs paying to a watched address.
+					for _, cred := range detail.Credits {
+						pkScript := detail.MsgTx.TxOut[cred.Index].PkScript
+						if addr, ok := scriptToAddr[string(pkScript)]; ok {
+							record(addr, detail.Hash, height)
+						}
+					}
+
+					// Inputs spending a watched address's output.
+					if len(detail.Debits) == 0 {
+						continue
+					}
+					var block *wtxmgr.Block
+					if height >= 0 {
+						block = &detail.Block.Block
+					}
+					prevScripts, err := w.TxStore.PreviousPkScripts(
+						txmgrNs, &detail.TxRecord, block,
+					)
+					if err != nil {
+						return false, err
+					}
+					for _, pkScript := range prevScripts {
+						if addr, ok := scriptToAddr[string(pkScript)]; ok {
+							record(addr, detail.Hash, height)
+						}
+					}
+				}
+				return false, nil
+			})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return history, nil
 }
 
 // isDevEnv determines whether the wallet is currently under a local developer
